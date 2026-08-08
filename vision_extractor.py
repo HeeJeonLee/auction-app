@@ -1,13 +1,11 @@
 import os
 import json
-import base64
 import pandas as pd
 import google.generativeai as genai
-from typing import List, Dict, Any
-from io import BytesIO
+from typing import List, Any
 
 def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str]) -> pd.DataFrame:
-    """최고위 전문가용: 여러 장의 이미지를 파싱하고, NPL 및 대주 매칭을 위한 딥 러닝 심층 분석을 제공합니다."""
+    """최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다."""
     if not api_key:
         raise ValueError("Gemini API 키가 필요합니다.")
     
@@ -15,25 +13,27 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
     model = genai.GenerativeModel('gemini-1.5-pro')
 
     prompt = """
-    당신은 최상위 부동산 NPL 전문가 및 투자 심사역(Senior Underwriter)입니다.
-    제공된 이미지(경매 물건 정보)를 정밀 분석하여, 각 물건별로 아래 JSON 배열(Array) 형태의 구조화된 데이터를 추출하십시오.
+    당신은 최상위 부동산 NPL 전문가 및 투자 심사역입니다.
+    제공된 이미지에서 경매 물건의 핵심 정보를 추출하여 JSON 배열(Array)로 반환하십시오.
+    *중요*: 이미지에 글씨가 희미하거나 완벽하지 않아도 절대 빈 배열([])을 반환하지 마십시오. 추정할 수 있는 한계 내에서 최대한 필드를 채워 1개 이상의 객체를 만드십시오. 정 찾기 어렵다면 사건번호에 "미상"이라고 적더라도 객체를 생성해야 합니다.
 
-    [필수 추출 데이터 (숫자형은 콤마 없이 작성, 모를 경우 빈 문자열)]
-    - 사건번호 (예: 2023타경1234)
-    - 매각기일 (예: 2026-08-30. 화면에 입찰/매각기일이 보이면 반드시 추출)
+    [필수 추출 데이터 (숫자형은 콤마 없이 작성, 모를 경우 0 또는 빈 문자열)]
+    - 원본파일명 (제공된 이미지의 파일명을 그대로 기재. 모르면 빈 문자열)
+    - 사건번호 (없으면 "미상")
+    - 매각기일 (예: 2026-08-30)
     - 법원명
     - 물건번호
     - 주소
     - 아파트명
     - 감정가
     - 최저매각가격
-    - 낙찰예상가 (없으면 해당 지역의 최근 낙찰가율 동향을 반영하여 전문가적 관점에서 추정)
-    - 부채총액 (청구금액+기타 설정액 등 총 채무액 추정)
-    - KB시세 (없으면 감정가로 대체)
-    - 주요채권자 (이름/기관명)
+    - 낙찰예상가
+    - 부채총액 (청구금액+기타 설정액 등 추정)
+    - KB시세
+    - 주요채권자
     
     [권리 위험도 평가 (있으면 "예", 없으면 "아니요")]
-    - 청산가능여부 (법적 하자가 심각하여 완전 불가능한 경우가 아니면 "예")
+    - 청산가능여부
     - 근저당여부
     - 압류여부
     - 가압류여부
@@ -42,21 +42,23 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
     - 전세권여부
     - 가등기여부
 
-    [★ 전문가 심층 종합 의견 (이 필드는 반드시 작성해야 함)]
-    - AI_심층분석: "시세 대비 부채비율(LTV), 지역적 낙찰가율 통계, 명도 난이도, 주요 권리상 하자(가등기/가처분 등)의 인수 가능성 등을 종합적으로 고려한 3~4문장의 전문가적 리스크 평가 및 매입/대환 타당성 의견 (어조는 매우 날카롭고 전문적인 금융/법적 용어 사용)"
+    [★ 전문가 심층 종합 의견]
+    - AI_심층분석: "시세 대비 부채비율(LTV), 지역적 낙찰가율 통계, 명도 난이도, 주요 권리상 하자 등을 고려한 3~4문장의 최고급 리스크 평가 (매우 날카롭고 전문적인 금융/법적 용어 사용)"
 
     JSON 예시:
     [
       {
+        "원본파일명": "image_123.jpg",
         "사건번호": "2023타경1234",
-        "매각기일": "2026-08-30",
-        ...
-        "AI_심층분석": "현재 부채총액이 감정가를 상회하는 깡통전세 위험군이나, 선순위 채권자의 채권최고액을 고려 시 실제 피담보채무액은 낮을 가능성 존재. 다만 임차권등기가 설정되어 명도 저항 리스크가 높으므로 NPL 론세일 접근 시 보수적인 LTV 적용(80% 미만) 편성이 요구됨."
+        "감정가": "500000000",
+        "부채총액": "450000000",
+        "AI_심층분석": "현재 부채총액이 감정가에 육박하나..."
       }
     ]
     """
 
     image_parts = []
+    # 용량 최적화 (사진이 너무 많거나 클 경우 대비)
     for img_file in image_files:
         ext = img_file.name.lower()
         mime_type = "image/jpeg" if ext.endswith(('jpg', 'jpeg')) else "image/png"
@@ -64,12 +66,22 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
             "mime_type": mime_type,
             "data": img_file.getvalue()
         })
+        # AI에게 파일명을 알려주기 위해 텍스트 파트도 추가
+        image_parts.append(f"이 이미지의 파일명은 '{img_file.name}' 입니다.")
 
     try:
         response = model.generate_content([prompt] + image_parts)
         result_text = response.text.replace("```json", "").replace("```", "").strip()
-        parsed_data = json.loads(result_text)
         
+        try:
+            parsed_data = json.loads(result_text)
+        except:
+            # 완전 실패 시 하드코딩된 에러 배열 반환
+            parsed_data = [{"사건번호": "판독불가", "AI_심층분석": "[오류] AI가 사진에서 텍스트를 파싱하는 데 실패했습니다. 원본 캡쳐를 수동으로 확인하십시오."}]
+
+        if not parsed_data or len(parsed_data) == 0:
+            parsed_data = [{"사건번호": "정보없음", "AI_심층분석": "[경고] 제공된 캡쳐 파일에서 명확한 부동산 법원 경매 데이터를 찾지 못했습니다. 그러나 증빙 캡쳐본 보관함에 사진은 저장되었습니다."}]
+
         if isinstance(parsed_data, dict):
             parsed_data = [parsed_data]
             
@@ -79,7 +91,6 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
             for key, value in data.items():
                 if key in row:
                     row[key] = value
-            # Map the new expert field to the dataframe
             row["AI_심층분석"] = data.get("AI_심층분석", "")
             extracted_rows.append(row)
 
