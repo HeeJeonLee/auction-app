@@ -10,6 +10,7 @@ from analysis import (
     build_visit_advice, build_phone_pitch, build_visit_pitch,
     passes_market_filters, needs_registry_verification
 )
+from vision_extractor import process_images_to_dataframe
 
 # 모바일 환경에 최적화된 설정 (centered layout, sidebar collapsed)
 st.set_page_config(page_title="핸드폰 캡쳐로 성적표(50억까지)", page_icon="📱", layout="centered", initial_sidebar_state="collapsed")
@@ -116,20 +117,64 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     return result
 
-st.subheader("📂 1. 데이터 업로드")
-uploaded_file = st.file_uploader("엑셀/CSV 파일 선택", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
+st.subheader("📂 1. 데이터 및 캡쳐 사진 업로드")
+st.caption("엑셀 데이터 또는 스마트폰 캡쳐 사진을 올려주세요. 사진만 올릴 경우 AI가 글씨를 읽어 자동으로 분석합니다.")
 
-if uploaded_file is not None:
-    try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
+api_key = st.text_input("🔑 Google Gemini API 키 (사진 자동 분석용)", type="password", help="사진 인식을 위해 구글 제미나이 API 키가 필요합니다. 엑셀만 업로드할 경우 비워두셔도 됩니다.")
 
-        st.session_state.df = enrich_dataframe(df)
-        st.success("✅ 파일 업로드 및 자동 분석이 완료되었습니다!")
-    except Exception as e:
-        st.error(f"❌ 파일 읽기 실패: {e}")
+uploaded_files = st.file_uploader(
+    "엑셀/CSV 및 사진 파일 일괄 선택", 
+    type=["xlsx", "xls", "csv", "png", "jpg", "jpeg"], 
+    accept_multiple_files=True, 
+    label_visibility="collapsed"
+)
+
+if uploaded_files:
+    data_loaded = False
+    image_files = []
+    excel_dfs = []
+    
+    for file in uploaded_files:
+        file_ext = file.name.lower()
+        if file_ext.endswith((".csv", ".xlsx", ".xls")):
+            try:
+                if file_ext.endswith(".csv"):
+                    df = pd.read_csv(file)
+                else:
+                    df = pd.read_excel(file)
+                excel_dfs.append(df)
+            except Exception as e:
+                st.error(f"❌ 데이터 파일 읽기 실패 ({file.name}): {e}")
+        elif file_ext.endswith((".png", ".jpg", ".jpeg")):
+            image_files.append(file)
+            
+    # Process Images using AI Vision if API key is provided
+    if image_files:
+        st.success(f"🖼️ {len(image_files)}장의 사진이 첨부되었습니다.")
+        with st.expander("📷 업로드된 캡쳐 사진 미리보기"):
+            for img_file in image_files:
+                st.image(img_file, use_container_width=True, caption=img_file.name)
+                
+        if not excel_dfs:
+            if not api_key:
+                st.warning("⚠️ 사진만 업로드되었습니다! 사진 속 글씨를 AI가 분석하려면 위에 **Gemini API 키**를 입력하거나, 엑셀 파일을 함께 업로드해 주세요.")
+            else:
+                with st.spinner("🤖 AI가 사진 속 경매 정보를 읽고 있습니다. (약 5~10초 소요)..."):
+                    try:
+                        vision_df = process_images_to_dataframe(api_key, image_files, DEFAULT_COLUMNS)
+                        excel_dfs.append(vision_df)
+                        st.success("✅ AI 캡쳐 사진 분석 완료!")
+                    except Exception as e:
+                        st.error(f"❌ AI 분석 실패: API 키가 올바르지 않거나 이미지를 읽을 수 없습니다.\n({e})")
+                        
+    # Merge and enrich all data
+    if excel_dfs:
+        combined_df = pd.concat(excel_dfs, ignore_index=True) if len(excel_dfs) > 1 else excel_dfs[0]
+        st.session_state.df = enrich_dataframe(combined_df)
+        data_loaded = True
+        
+    if data_loaded:
+        st.success("✅ 데이터 분석 및 생성 완료!")
 
 # 모바일용 샘플 템플릿 다운로드 버튼
 buf = BytesIO()
