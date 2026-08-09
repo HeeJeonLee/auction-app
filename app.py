@@ -307,6 +307,15 @@ if "uploaded_images" not in st.session_state:
 if "processing_log" not in st.session_state:
     st.session_state.processing_log = []
 
+
+def is_image_upload(file_obj) -> bool:
+    """업로드 객체의 MIME/확장자를 함께 확인해 이미지 여부를 안전하게 판별한다."""
+    mime_type = str(getattr(file_obj, "type", "") or "").lower()
+    file_name = str(getattr(file_obj, "name", "") or "").lower()
+    if mime_type.startswith("image/"):
+        return True
+    return file_name.endswith((".png", ".jpg", ".jpeg", ".webp"))
+
 def resolve_api_key() -> str:
     """환경변수, .env, Streamlit 시크릿, 세션 입력 순으로 API 키를 해석한다."""
     current = str(st.session_state.get("api_key") or "").strip()
@@ -534,20 +543,23 @@ if uploaded_files:
     st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")
     quality_cols = st.columns(min(3, len(uploaded_files)))
     for idx, uploaded_file in enumerate(uploaded_files):
-        if uploaded_file.type.startswith("image/"):
-            quality = assess_image_quality(uploaded_file.getvalue())
-            with quality_cols[idx % len(quality_cols)]:
-                st.image(uploaded_file, use_container_width=True)
-                profile_name = {
-                    "mobile_long": "긴 모바일 캡처",
-                    "table_dense": "표 밀집 문서",
-                    "mixed_ui": "혼합 화면",
-                }.get(str(quality.get("profile") or "mixed_ui"), "혼합 화면")
-                st.caption(
-                    f"품질 점수: {quality['score']} (기준 {quality.get('recommended_min_score', 64)}) "
-                    f"/ 유형: {profile_name} / 캡처 보정 필요: {'예' if quality['needs_recapture'] else '아니오'}"
-                )
-                st.write(build_recapture_guidance(quality))
+        if is_image_upload(uploaded_file):
+            try:
+                quality = assess_image_quality(uploaded_file.getvalue())
+                with quality_cols[idx % len(quality_cols)]:
+                    st.image(uploaded_file, use_container_width=True)
+                    profile_name = {
+                        "mobile_long": "긴 모바일 캡처",
+                        "table_dense": "표 밀집 문서",
+                        "mixed_ui": "혼합 화면",
+                    }.get(str(quality.get("profile") or "mixed_ui"), "혼합 화면")
+                    st.caption(
+                        f"품질 점수: {quality.get('score', 50)} (기준 {quality.get('recommended_min_score', 64)}) "
+                        f"/ 유형: {profile_name} / 캡처 보정 필요: {'예' if quality.get('needs_recapture') else '아니오'}"
+                    )
+                    st.write(build_recapture_guidance(quality))
+            except Exception as preview_error:
+                st.warning(f"이미지 미리보기 중 오류가 발생했습니다: {uploaded_file.name} / {type(preview_error).__name__}")
 
 analyze_clicked = st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width=True)
 
@@ -570,14 +582,21 @@ elif analyze_clicked and uploaded_files:
     time.sleep(0.5)
     
     for file in uploaded_files:
-        file_ext = file.name.lower()
-        if file_ext.endswith((".csv", ".xlsx")):
-            st.session_state.processing_log.append(f"✓ 엑셀 파일 감지: {file.name}")
-            df = pd.read_csv(file) if file_ext.endswith(".csv") else pd.read_excel(file)
-            excel_dfs.append(df)
-        elif file_ext.endswith((".png", ".jpg", ".jpeg")):
-            st.session_state.processing_log.append(f"✓ 이미지 파일 감지: {file.name}")
-            image_files.append(file)
+        try:
+            file_ext = str(getattr(file, "name", "") or "").lower()
+            if file_ext.endswith((".csv", ".xlsx")):
+                st.session_state.processing_log.append(f"✓ 엑셀 파일 감지: {file.name}")
+                df = pd.read_csv(file) if file_ext.endswith(".csv") else pd.read_excel(file)
+                excel_dfs.append(df)
+            elif is_image_upload(file):
+                st.session_state.processing_log.append(f"✓ 이미지 파일 감지: {file.name}")
+                image_files.append(file)
+            else:
+                st.session_state.processing_log.append(f"⚠️ 지원하지 않는 파일 형식: {file.name}")
+        except Exception as file_error:
+            st.session_state.processing_log.append(
+                f"✗ 파일 분류/로드 실패: {getattr(file, 'name', 'unknown')} ({type(file_error).__name__})"
+            )
     
     # 2단계: Vision AI 분석
     if image_files:
