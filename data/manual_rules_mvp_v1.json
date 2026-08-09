@@ -1,0 +1,175 @@
+{
+  "rule_version": "MVP-2026.08-v1",
+  "base_score": 60,
+  "score_bounds": {
+    "min": 0,
+    "max": 100
+  },
+  "verdict_thresholds": {
+    "go": 75,
+    "hold": 55
+  },
+  "rules": [
+    {
+      "id": "RA-01",
+      "page": "p01",
+      "domain": "rights_analysis",
+      "field": "사건번호",
+      "operator": "exists",
+      "mode": "must_pass",
+      "weight": 10,
+      "risk_label": "critical_missing_case_no",
+      "recommendation": "사건번호를 원문에서 재확인하고 정규화하세요.",
+      "source": "manual:p01"
+    },
+    {
+      "id": "RA-02",
+      "page": "p02",
+      "domain": "rights_analysis",
+      "field": "법원명",
+      "operator": "exists",
+      "mode": "must_pass",
+      "weight": 7,
+      "risk_label": "missing_court",
+      "recommendation": "법원명/지원명을 공고문 헤더에서 다시 추출하세요.",
+      "source": "manual:p02"
+    },
+    {
+      "id": "RA-03",
+      "page": "p03",
+      "domain": "rights_analysis",
+      "field": "주소",
+      "operator": "exists",
+      "mode": "must_pass",
+      "weight": 10,
+      "risk_label": "critical_missing_address",
+      "recommendation": "주소(동/호 포함)를 보완해야 사건 식별이 가능합니다.",
+      "source": "manual:p03"
+    },
+    {
+      "id": "RA-04",
+      "page": "p04",
+      "domain": "rights_analysis",
+      "field": "감정가",
+      "operator": "numeric_gte",
+      "value": 500000000,
+      "mode": "must_pass",
+      "weight": 10,
+      "risk_label": "below_min_appraisal",
+      "recommendation": "대상 범위(감정가 5억 이상) 미달 건은 제외 처리하세요.",
+      "source": "manual:p04"
+    },
+    {
+      "id": "RA-05",
+      "page": "p05",
+      "domain": "rights_analysis",
+      "field": "감정가",
+      "operator": "numeric_lte",
+      "value": 5000000000,
+      "mode": "must_pass",
+      "weight": 6,
+      "risk_label": "above_preferred_band",
+      "recommendation": "50억 초과는 대형딜 트랙으로 분리하세요.",
+      "source": "manual:p05"
+    },
+    {
+      "id": "RA-06",
+      "page": "p06",
+      "domain": "rights_analysis",
+      "field": "지역",
+      "operator": "region_allowed",
+      "value": ["서울", "경기", "인천"],
+      "mode": "must_pass",
+      "weight": 9,
+      "risk_label": "out_of_region_scope",
+      "recommendation": "서울/수도권 기준 외 물건은 별도 큐로 분리하세요.",
+      "source": "manual:p06"
+    },
+    {
+      "id": "RA-07",
+      "page": "p07",
+      "domain": "rights_analysis",
+      "field": "부채총액",
+      "operator": "numeric_exists",
+      "mode": "must_pass",
+      "weight": 8,
+      "risk_label": "missing_debt",
+      "recommendation": "청구금액/채권최고액 기반으로 부채총액을 보완하세요.",
+      "source": "manual:p07"
+    },
+    {
+      "id": "RA-08",
+      "page": "p08",
+      "domain": "rights_analysis",
+      "field": "KB시세",
+      "operator": "numeric_exists",
+      "mode": "must_pass",
+      "weight": 7,
+      "risk_label": "missing_kb_price",
+      "recommendation": "KB 또는 대체 시세를 반드시 기록하세요.",
+      "source": "manual:p08"
+    },
+    {
+      "id": "RA-09",
+      "page": "p09",
+      "domain": "rights_analysis",
+      "field": "LTV",
+      "operator": "ltv_max",
+      "value": 0.85,
+      "mode": "must_pass",
+      "weight": 12,
+      "risk_label": "high_ltv",
+      "recommendation": "LTV 85% 초과 건은 취하 접근 전 보완전략이 필요합니다.",
+      "source": "manual:p09"
+    },
+    {
+      "id": "RA-10",
+      "page": "p10",
+      "domain": "rights_analysis",
+      "field": "권리리스크",
+      "operator": "risk_flags_max",
+      "value": 3,
+      "mode": "must_pass",
+      "weight": 9,
+      "risk_label": "excessive_rights_risk",
+      "recommendation": "권리리스크가 3개 초과면 등기부 정밀검토 후 재평가하세요.",
+      "source": "manual:p10"
+    },
+    {
+      "id": "WP-01",
+      "page": "p33",
+      "domain": "withdrawal_process",
+      "field": "주요채권자",
+      "operator": "exists",
+      "mode": "must_pass",
+      "weight": 8,
+      "risk_label": "missing_creditor",
+      "recommendation": "채권자 유형을 식별해야 취하 스크립트 품질이 올라갑니다.",
+      "source": "manual:p33"
+    },
+    {
+      "id": "WP-02",
+      "page": "p38",
+      "domain": "withdrawal_process",
+      "field": "낙찰예상가",
+      "operator": "numeric_exists",
+      "mode": "must_pass",
+      "weight": 6,
+      "risk_label": "missing_expected_bid",
+      "recommendation": "낙찰예상가가 있어야 회수 비교 논리를 제시할 수 있습니다.",
+      "source": "manual:p38"
+    },
+    {
+      "id": "WP-03",
+      "page": "p41",
+      "domain": "withdrawal_process",
+      "field": "근저당여부",
+      "operator": "bool_yes_penalty",
+      "mode": "risk_penalty",
+      "weight": 4,
+      "risk_label": "secured_claim_complexity",
+      "recommendation": "근저당권 구조를 설명하는 회수우선 논리를 포함하세요.",
+      "source": "manual:p41"
+    }
+  ]
+}

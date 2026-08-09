@@ -28,6 +28,7 @@ from analysis import (
     get_creditor_advice, evaluate_case_policy, get_policy_reference,
     get_creditor_analysis_guidance
 )
+from manual_rule_engine import evaluate_manual_rules
 from vision_extractor import (
     process_images_to_dataframe,
     parse_captured_text_to_dataframe,
@@ -303,7 +304,8 @@ st.info("⚠️ 이 도구는 최종 법률 판단을 대신하지 않으며, �
 DEFAULT_COLUMNS = [
     "원본파일명", "사건번호", "매각기일", "잔여일수", "법원명", "물건번호", "주소", "아파트명", "감정가", "최저매각가격", "낙찰예상가",
     "부채총액", "청산가능여부", "권리요약", "분석점수", "분석등급", "제안포인트", "담당자메모",
-    "KB시세", "주요채권자", "심사상태", "추정LTV", "AI_심층분석", "등기부열람여부", "근저당여부", "압류여부", "가처분여부"
+    "KB시세", "주요채권자", "심사상태", "추정LTV", "AI_심층분석", "등기부열람여부", "근저당여부", "압류여부", "가처분여부",
+    "규칙버전", "규칙점수", "규칙판정", "규칙근거", "취하스크립트"
 ]
 
 # Session State 초기화
@@ -521,6 +523,17 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
+            # MVP 규칙 엔진: 매뉴얼 규칙 데이터 기반 점수/판정/근거/취하 스크립트 생성
+            try:
+                manual_eval = evaluate_manual_rules(row_dict_updated)
+                result.at[idx, "규칙버전"] = manual_eval.get("rule_version", "")
+                result.at[idx, "규칙점수"] = manual_eval.get("score", "")
+                result.at[idx, "규칙판정"] = manual_eval.get("verdict", "")
+                result.at[idx, "규칙근거"] = " | ".join(manual_eval.get("evidence", [])[:6])
+                result.at[idx, "취하스크립트"] = manual_eval.get("withdrawal_script", "")
+            except Exception as rule_error:
+                result.at[idx, "규칙판정"] = f"규칙엔진오류({type(rule_error).__name__})"
+
             if not str(row.get("담당자메모") or "").strip():
                 result.at[idx, "담당자메모"] = f"▶ 실무 메모: {build_owner_pitch(row_dict_updated)}"
 
@@ -568,19 +581,35 @@ with flow_col3:
 with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expanded=False):
     manual_100p_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무와_경매_취하_유도_프로세스.md"
+    manual_mvp_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_초안_v1.md"
     manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
+    manual_mvp_name = "05_MVP_권리분석32p_취하18p_초안_v1.md"
 
     manual_100p_text = ""
     manual_process_text = ""
+    manual_mvp_text = ""
     try:
         manual_100p_text = read_utf8_text_file(str(manual_100p_path))
         manual_process_text = read_utf8_text_file(str(manual_process_path))
+        manual_mvp_text = read_utf8_text_file(str(manual_mvp_path))
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
 
     st.markdown("### 권리분석 고도화 매뉴얼")
     st.info("원문은 캐시로 로딩하고, 미리보기는 요청 시에만 렌더링해 앱 속도 저하를 줄였습니다.")
+
+    if manual_mvp_text:
+        st.markdown("#### ✅ 검수용 MVP 10p 초안(50p 구조)")
+        st.download_button(
+            "📥 MVP 50p 초안 다운로드 (MD)",
+            data=manual_mvp_text,
+            file_name=manual_mvp_name,
+            mime="text/markdown",
+            use_container_width=True,
+        )
+        with st.expander("MVP 10p 미리보기", expanded=False):
+            st.markdown(manual_mvp_text[:12000])
 
     if manual_100p_text:
         dl_col1, dl_col2, dl_col3 = st.columns(3)

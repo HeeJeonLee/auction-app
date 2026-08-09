@@ -3,6 +3,10 @@ import csv
 import os
 from typing import Any
 
+TARGET_REGIONS = ["서울", "경기", "인천"]
+MIN_APPRAISAL_PRICE = 500_000_000
+MAX_APPRAISAL_PRICE = 5_000_000_000
+
 POLICY_REFERENCE = {
     "name": "Auctiscope 운영 정책",
     "objective": "캡처본 입력 후 권리분석까지 완결된 사건만 데이터로 보관하고, 기준 미달 건은 플랫폼이 데이터에서 삭제하며 나머지는 사용자가 삭제할 수 있도록 운영한다.",
@@ -12,6 +16,10 @@ POLICY_REFERENCE = {
         "min_expected_price_to_debt_ratio": 1.0,
         "require_registry_review_for_risk_flags": True,
         "keep_only_verified_candidates": True,
+        "target_property_type": "아파트",
+        "target_regions": TARGET_REGIONS,
+        "min_appraisal_price": MIN_APPRAISAL_PRICE,
+        "max_appraisal_price": MAX_APPRAISAL_PRICE,
     },
     "rights_analysis": {
         "source_types": [
@@ -391,6 +399,8 @@ def evaluate_case_policy(row: dict[str, Any]) -> dict[str, Any]:
     rights_summary = str(row.get("권리요약") or "").strip()
     has_rights_analysis = bool(rights_summary)
 
+    scope_eval = evaluate_target_scope(row)
+
     max_kb_ratio = POLICY_REFERENCE["eligibility_rules"]["max_debt_to_kb_ratio"]
     max_expected_ratio = POLICY_REFERENCE["eligibility_rules"]["max_debt_to_expected_price_ratio"]
 
@@ -402,18 +412,49 @@ def evaluate_case_policy(row: dict[str, Any]) -> dict[str, Any]:
         expected_ok = False
 
     rights_ready = has_rights_analysis
-    keep_data = kb_ok and expected_ok and rights_ready
+    keep_data = kb_ok and expected_ok and rights_ready and scope_eval["in_scope"]
 
     decision = "keep" if keep_data else "reject"
     return {
         "decision": decision,
         "keep_data": keep_data,
         "reason": (
-            "기준 충족" if keep_data else "부채비율/권리분석 기준 미달"
+            "기준 충족" if keep_data else f"부채비율/권리분석/대상범위 기준 미달 ({scope_eval['reason']})"
         ),
         "kb_ratio": (debt / kb_price) if kb_price > 0 else None,
         "expected_ratio": (debt / expected_price) if expected_price > 0 else None,
         "rights_ready": rights_ready,
+        "scope_in": scope_eval["in_scope"],
+        "scope_reason": scope_eval["reason"],
+    }
+
+
+def evaluate_target_scope(row: dict[str, Any]) -> dict[str, Any]:
+    """운영 대상 범위(아파트/서울수도권/감정가 5억~50억)를 판정한다."""
+    court_or_addr = f"{row.get('법원명') or ''} {row.get('주소') or ''}"
+    apt_name = str(row.get("아파트명") or "").strip()
+    appraisal = _safe_float(row.get("감정가") or row.get("appraisal_price"))
+
+    region_ok = any(token in court_or_addr for token in TARGET_REGIONS)
+    apt_ok = bool(apt_name)
+    price_min_ok = appraisal >= MIN_APPRAISAL_PRICE
+    price_max_ok = appraisal <= MAX_APPRAISAL_PRICE if appraisal > 0 else False
+
+    reasons = []
+    if not apt_ok:
+        reasons.append("아파트명 누락")
+    if not region_ok:
+        reasons.append("서울/수도권 범위 외")
+    if not price_min_ok:
+        reasons.append("감정가 5억 미만")
+    if not price_max_ok:
+        reasons.append("감정가 50억 초과 또는 미확인")
+
+    in_scope = apt_ok and region_ok and price_min_ok and price_max_ok
+    return {
+        "in_scope": in_scope,
+        "reason": "적합" if in_scope else ", ".join(reasons),
+        "appraisal": appraisal,
     }
 
 
@@ -450,6 +491,10 @@ def _choose_kb_threshold(row: dict[str, Any]) -> float:
     return 0.80 if risk_count >= 2 else 0.85
 
 def passes_market_filters(row: dict[str, Any]) -> bool:
+    scope_eval = evaluate_target_scope(row)
+    if not scope_eval["in_scope"]:
+        return False
+
     debt = _safe_float(row.get("부채총액"))
     if debt <= 0:
         return False
