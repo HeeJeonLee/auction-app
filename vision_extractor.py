@@ -269,6 +269,7 @@ def _to_rows(parsed_data: Any, image_name: str, default_columns: List[str]) -> l
             row["사건번호"] = "판독불가"
             row["AI_심층분석"] = "[오류] AI 결과 형식이 비정상이라 기본 행으로 대체되었습니다."
 
+        row = _normalize_extracted_row(row)
         auto_summary = build_structured_case_summary(row)
         row["권리요약"] = auto_summary["자동정리요약"]
         row["담당자메모"] = build_case_briefing(row)
@@ -280,6 +281,7 @@ def _to_rows(parsed_data: Any, image_name: str, default_columns: List[str]) -> l
         row["원본파일명"] = image_name
         row["사건번호"] = "정보없음"
         row["AI_심층분석"] = "[경고] AI가 이미지에서 경매 정보를 충분히 추출하지 못했습니다."
+        row = _normalize_extracted_row(row)
         auto_summary = build_structured_case_summary(row)
         row["권리요약"] = auto_summary["자동정리요약"]
         row["담당자메모"] = build_case_briefing(row)
@@ -293,8 +295,75 @@ def _norm_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_case_number(value: Any) -> str:
+    text = _norm_text(value)
+    if not text:
+        return ""
+
+    compact = re.sub(r"\s+", "", text)
+    m = re.search(r"(\d{4})타경(\d{2,10})", compact)
+    if m:
+        return f"{m.group(1)}타경{m.group(2)}"
+
+    m = re.search(r"(\d{4})타{0,1}경(\d{2,10})", compact)
+    if m:
+        return f"{m.group(1)}타경{m.group(2)}"
+
+    return compact
+
+
+def _normalize_yes_no(value: Any) -> str:
+    text = _norm_text(value).lower().replace(" ", "")
+    if not text:
+        return ""
+    yes_tokens = ["예", "y", "yes", "true", "있음", "존재", "소멸"]
+    no_tokens = ["아니오", "아니요", "n", "no", "false", "없음", "미존재"]
+    if any(token in text for token in yes_tokens):
+        return "예"
+    if any(token in text for token in no_tokens):
+        return "아니오"
+    return _norm_text(value)
+
+
+def _normalize_amount_text(value: Any) -> str:
+    text = _norm_text(value)
+    if not text:
+        return ""
+
+    if any(unit in text for unit in ["억", "만", "천", "원"]):
+        return text.replace(" ", "")
+
+    m = re.search(r"(\d[\d,]{2,})", text)
+    if m:
+        return m.group(1).replace(",", "")
+
+    return text
+
+
+def _normalize_extracted_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+
+    normalized["사건번호"] = _normalize_case_number(normalized.get("사건번호"))
+    if "관련사건번호" in normalized:
+        normalized["관련사건번호"] = _normalize_case_number(normalized.get("관련사건번호"))
+
+    for field in ["감정가", "최저매각가격", "낙찰예상가", "부채총액", "KB시세"]:
+        if field in normalized:
+            normalized[field] = _normalize_amount_text(normalized.get(field))
+
+    for field in ["청산가능여부", "근저당여부", "압류여부", "가압류여부", "가처분여부", "임차권등기여부", "전세권여부", "가등기여부"]:
+        if field in normalized:
+            normalized[field] = _normalize_yes_no(normalized.get(field))
+
+    for field in ["법원명", "아파트명", "주요채권자", "주소", "물건번호"]:
+        if field in normalized:
+            normalized[field] = re.sub(r"\s+", " ", _norm_text(normalized.get(field)))
+
+    return normalized
+
+
 def _group_case_key(row: dict[str, Any]) -> str:
-    case_no = _norm_text(row.get("사건번호"))
+    case_no = _normalize_case_number(row.get("사건번호"))
     if case_no and case_no not in {"판독불가", "정보없음", "AI쿼터대기", "미상"}:
         return f"case:{case_no.replace(' ', '')}"
 
@@ -329,6 +398,7 @@ def _merge_extracted_rows(rows: list[dict[str, Any]], default_columns: List[str]
     analyses: dict[str, list[str]] = {}
 
     for row in rows:
+        row = _normalize_extracted_row(row)
         key = _group_case_key(row)
         if key not in grouped:
             grouped[key] = {col: "" for col in default_columns}
@@ -374,6 +444,7 @@ def _merge_extracted_rows(rows: list[dict[str, Any]], default_columns: List[str]
 
     merged_rows: list[dict[str, Any]] = []
     for key, merged in grouped.items():
+        merged = _normalize_extracted_row(merged)
         merged["원본파일명"] = ", ".join(sources.get(key, [])[:6])
         merged["AI_심층분석"] = "\n\n".join(analyses.get(key, [])[:2])
 

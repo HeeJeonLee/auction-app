@@ -11,6 +11,7 @@ from vision_extractor import (
     process_images_to_dataframe,
     _merge_extracted_rows,
     _build_image_parts_for_mode,
+    _normalize_extracted_row,
 )
 
 
@@ -171,3 +172,23 @@ def test_build_image_parts_for_text_first_returns_segmented_parts():
     assert len(parts) >= 2
     image_dict_count = sum(1 for p in parts if isinstance(p, dict) and "data" in p)
     assert image_dict_count >= 2
+
+
+def test_normalize_extracted_row_cleans_core_fields():
+    raw = {
+        "사건번호": " 2024 타경 2979 ",
+        "부채총액": "청구:202,774,869",
+        "KB시세": " 8억 1,600만 원 ",
+        "근저당여부": "있음",
+        "압류여부": "없음",
+        "주요채권자": "  유더블유제십오차유동화전문유한회사  ",
+    }
+
+    row = _normalize_extracted_row(raw)
+
+    assert row["사건번호"] == "2024타경2979"
+    assert row["부채총액"] == "202774869"
+    assert "8억" in row["KB시세"]
+    assert row["근저당여부"] == "예"
+    assert row["압류여부"] == "아니오"
+    assert row["주요채권자"] == "유더블유제십오차유동화전문유한회사"
