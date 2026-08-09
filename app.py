@@ -514,6 +514,22 @@ def load_manual_page_title_map(path_value: str, mtime: float = 0.0) -> dict[str,
     return result
 
 
+@st.cache_data(show_spinner=False)
+def split_manual_sections(manual_text: str) -> dict[str, str]:
+    text = str(manual_text or "")
+    if not text.strip():
+        return {}
+    pattern = r"(?ms)^##\s+(p\d{2})\..*?(?=^##\s+p\d{2}\.|^##\s+규칙 데이터화 매핑 표|\Z)"
+    matches = re.finditer(pattern, text)
+    sections: dict[str, str] = {}
+    for m in matches:
+        key = str(m.group(1) or "").strip()
+        body = str(m.group(0) or "").strip()
+        if key and body:
+            sections[key] = body
+    return sections
+
+
 # API Key 관리
 if "api_key" not in st.session_state:
     st.session_state.api_key = resolve_api_key()
@@ -894,6 +910,14 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                 use_container_width=True,
             )
         with mvp_col3:
+            mvp_zip = build_manual_zip_bundle(
+                "",
+                "",
+                "",
+                "",
+                manual_mvp_name,
+                manual_mvp_text,
+            )
             bundle_zip = build_manual_zip_bundle(
                 manual_100p_name,
                 manual_100p_text,
@@ -903,14 +927,21 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                 manual_mvp_text,
             )
             st.download_button(
-                "📥 검수 번들 다운로드 (ZIP)",
+                "📥 검수 번들 다운로드 (ZIP, MVP50p 전용)",
+                data=mvp_zip,
+                file_name="auction_manual_mvp50_bundle.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+            st.download_button(
+                "📥 전체 번들 다운로드 (ZIP, 아카이브 포함)",
                 data=bundle_zip,
                 file_name="auction_manual_bundle.zip",
                 mime="application/zip",
                 use_container_width=True,
             )
 
-        st.caption("검수 번들 구성: MVP50p(MD/TXT) + 100p(MD/TXT) + 보조문서(MD/TXT)")
+        st.caption("기본 검수는 MVP50p 전용 번들을 사용합니다.")
 
         enable_mvp_preview = st.checkbox(
             "MVP 50p 미리보기 로드",
@@ -919,61 +950,80 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
             help="검수 중 빠른 확인을 위해 기본 ON입니다.",
         )
         if enable_mvp_preview:
-            st.markdown(manual_mvp_text[:18000])
+            section_map = split_manual_sections(manual_mvp_text)
+            section_keys = sorted(section_map.keys())
+            if section_keys:
+                selected_section = st.selectbox(
+                    "검수 페이지 선택",
+                    options=section_keys,
+                    index=0,
+                    key="mvp_section_selector",
+                )
+                st.markdown(section_map.get(selected_section, ""))
+            else:
+                st.markdown(manual_mvp_text)
     else:
         st.warning("MVP 50p 파일을 읽지 못했습니다. docs 경로를 확인해 주세요.")
 
-    with st.expander("📚 레거시 참고문서 (100p/보조)", expanded=False):
-        if manual_100p_text:
-            legacy_col1, legacy_col2 = st.columns(2)
-            with legacy_col1:
+    show_archive_docs = st.checkbox(
+        "아카이브 문서 표시",
+        value=False,
+        key="show_archive_docs_toggle",
+        help="기본 검수 화면에서는 숨깁니다.",
+    )
+
+    if show_archive_docs:
+        with st.expander("📚 아카이브 문서", expanded=False):
+            if manual_100p_text:
+                legacy_col1, legacy_col2 = st.columns(2)
+                with legacy_col1:
+                    st.download_button(
+                        "📥 100p 참고문서 다운로드 (MD)",
+                        data=manual_100p_text,
+                        file_name=manual_100p_name,
+                        mime="text/markdown",
+                        use_container_width=True,
+                    )
+                with legacy_col2:
+                    st.download_button(
+                        "📥 100p 참고문서 다운로드 (TXT)",
+                        data=manual_100p_text,
+                        file_name=manual_100p_name.replace(".md", ".txt"),
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
+
+                enable_manual_preview = st.checkbox(
+                    "100p 참고문서 미리보기 로드",
+                    value=False,
+                    key="manual_preview_toggle",
+                    help="기본 OFF로 두고 필요 시에만 렌더링합니다.",
+                )
+                if enable_manual_preview:
+                    page_size = 7000
+                    total_pages = max(1, (len(manual_100p_text) + page_size - 1) // page_size)
+                    selected_page = st.number_input(
+                        "100p 문서 조각 번호",
+                        min_value=1,
+                        max_value=total_pages,
+                        value=1,
+                        step=1,
+                    )
+                    start = (selected_page - 1) * page_size
+                    end = min(len(manual_100p_text), start + page_size)
+                    st.caption(f"표시 구간: {start + 1:,} ~ {end:,} / 전체 {len(manual_100p_text):,}자")
+                    st.markdown(manual_100p_text[start:end])
+            else:
+                st.caption("100p 참고문서는 현재 비어 있습니다.")
+
+            if manual_process_text:
                 st.download_button(
-                    "📥 100p 참고문서 다운로드 (MD)",
-                    data=manual_100p_text,
-                    file_name=manual_100p_name,
+                    "📥 보조 문서 다운로드 (MD)",
+                    data=manual_process_text,
+                    file_name="04_권리분석_실무와_경매_취하_유도_프로세스.md",
                     mime="text/markdown",
                     use_container_width=True,
                 )
-            with legacy_col2:
-                st.download_button(
-                    "📥 100p 참고문서 다운로드 (TXT)",
-                    data=manual_100p_text,
-                    file_name=manual_100p_name.replace(".md", ".txt"),
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-
-            enable_manual_preview = st.checkbox(
-                "100p 참고문서 미리보기 로드",
-                value=False,
-                key="manual_preview_toggle",
-                help="기본 OFF로 두고 필요 시에만 렌더링합니다.",
-            )
-            if enable_manual_preview:
-                page_size = 7000
-                total_pages = max(1, (len(manual_100p_text) + page_size - 1) // page_size)
-                selected_page = st.number_input(
-                    "100p 문서 조각 번호",
-                    min_value=1,
-                    max_value=total_pages,
-                    value=1,
-                    step=1,
-                )
-                start = (selected_page - 1) * page_size
-                end = min(len(manual_100p_text), start + page_size)
-                st.caption(f"표시 구간: {start + 1:,} ~ {end:,} / 전체 {len(manual_100p_text):,}자")
-                st.markdown(manual_100p_text[start:end])
-        else:
-            st.caption("100p 참고문서는 현재 비어 있습니다.")
-
-        if manual_process_text:
-            st.download_button(
-                "📥 보조 문서 다운로드 (MD)",
-                data=manual_process_text,
-                file_name="04_권리분석_실무와_경매_취하_유도_프로세스.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
 
 col_api1, col_api2 = st.columns([3, 1])
 with col_api1:
