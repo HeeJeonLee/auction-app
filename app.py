@@ -438,7 +438,8 @@ def resolve_api_key() -> str:
 
 
 @st.cache_data(show_spinner=False)
-def read_utf8_text_file(path_value: str) -> str:
+def read_utf8_text_file(path_value: str, mtime: float = 0.0) -> str:
+    _ = mtime
     path_obj = Path(path_value)
     if not path_obj.exists():
         return ""
@@ -446,7 +447,14 @@ def read_utf8_text_file(path_value: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def build_manual_zip_bundle(manual_name: str, manual_text: str, process_name: str, process_text: str) -> bytes:
+def build_manual_zip_bundle(
+    manual_name: str,
+    manual_text: str,
+    process_name: str,
+    process_text: str,
+    mvp_name: str,
+    mvp_text: str,
+) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         if manual_text:
@@ -455,11 +463,15 @@ def build_manual_zip_bundle(manual_name: str, manual_text: str, process_name: st
         if process_text:
             zf.writestr(process_name, process_text)
             zf.writestr(process_name.replace(".md", ".txt"), process_text)
+        if mvp_text:
+            zf.writestr(mvp_name, mvp_text)
+            zf.writestr(mvp_name.replace(".md", ".txt"), mvp_text)
     return buffer.getvalue()
 
 
 @st.cache_data(show_spinner=False)
-def load_rule_source_map(path_value: str) -> dict[str, dict[str, str]]:
+def load_rule_source_map(path_value: str, mtime: float = 0.0) -> dict[str, dict[str, str]]:
+    _ = mtime
     path_obj = Path(path_value)
     if not path_obj.exists():
         return {}
@@ -482,7 +494,8 @@ def load_rule_source_map(path_value: str) -> dict[str, dict[str, str]]:
 
 
 @st.cache_data(show_spinner=False)
-def load_manual_page_title_map(path_value: str) -> dict[str, str]:
+def load_manual_page_title_map(path_value: str, mtime: float = 0.0) -> dict[str, str]:
+    _ = mtime
     path_obj = Path(path_value)
     if not path_obj.exists():
         return {}
@@ -657,8 +670,14 @@ def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None
 
     rulepack_path = Path(__file__).resolve().parent / "data" / "manual_rules_mvp_v1.json"
     manual_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_초안_v1.md"
-    source_map = load_rule_source_map(str(rulepack_path))
-    page_title_map = load_manual_page_title_map(str(manual_path))
+    source_map = load_rule_source_map(
+        str(rulepack_path),
+        rulepack_path.stat().st_mtime if rulepack_path.exists() else 0.0,
+    )
+    page_title_map = load_manual_page_title_map(
+        str(manual_path),
+        manual_path.stat().st_mtime if manual_path.exists() else 0.0,
+    )
 
     sorted_frame = frame.copy()
     sorted_frame["_rule_score_num"] = pd.to_numeric(sorted_frame.get("규칙점수", ""), errors="coerce").fillna(-1)
@@ -837,9 +856,18 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_process_text = ""
     manual_mvp_text = ""
     try:
-        manual_100p_text = read_utf8_text_file(str(manual_100p_path))
-        manual_process_text = read_utf8_text_file(str(manual_process_path))
-        manual_mvp_text = read_utf8_text_file(str(manual_mvp_path))
+        manual_100p_text = read_utf8_text_file(
+            str(manual_100p_path),
+            manual_100p_path.stat().st_mtime if manual_100p_path.exists() else 0.0,
+        )
+        manual_process_text = read_utf8_text_file(
+            str(manual_process_path),
+            manual_process_path.stat().st_mtime if manual_process_path.exists() else 0.0,
+        )
+        manual_mvp_text = read_utf8_text_file(
+            str(manual_mvp_path),
+            manual_mvp_path.stat().st_mtime if manual_mvp_path.exists() else 0.0,
+        )
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
 
@@ -847,7 +875,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     st.info("원문은 캐시로 로딩하고, 미리보기는 요청 시에만 렌더링해 앱 속도 저하를 줄였습니다.")
 
     if manual_mvp_text:
-        st.markdown("#### ✅ 검수용 MVP 10p 초안(50p 구조)")
+        st.markdown("#### ✅ 검수용 MVP 50p 초안")
         st.download_button(
             "📥 MVP 50p 초안 다운로드 (MD)",
             data=manual_mvp_text,
@@ -855,7 +883,14 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
             mime="text/markdown",
             use_container_width=True,
         )
-        with st.expander("MVP 10p 미리보기", expanded=False):
+        st.download_button(
+            "📥 MVP 50p 초안 다운로드 (TXT)",
+            data=manual_mvp_text,
+            file_name=manual_mvp_name.replace(".md", ".txt"),
+            mime="text/plain",
+            use_container_width=True,
+        )
+        with st.expander("MVP 50p 미리보기", expanded=False):
             st.markdown(manual_mvp_text[:12000])
 
     if manual_100p_text:
@@ -882,9 +917,11 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                 manual_100p_text,
                 manual_process_name,
                 manual_process_text,
+                manual_mvp_name,
+                manual_mvp_text,
             )
             st.download_button(
-                "📥 매뉴얼 번들 다운로드 (ZIP)",
+                "📥 매뉴얼 번들 다운로드 (ZIP, 100p+MVP50p+보조문서)",
                 data=bundle_zip,
                 file_name="auction_manual_bundle.zip",
                 mime="application/zip",
