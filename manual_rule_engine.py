@@ -155,6 +155,7 @@ def evaluate_manual_rules(row: dict[str, Any], path: Path | None = None) -> dict
     risks: list[str] = []
     recommendations: list[str] = []
     evidences: list[str] = []
+    failed_rule_ids: list[str] = []
 
     for rule in rules:
         passed, evidence = _eval_rule(rule, row)
@@ -162,14 +163,17 @@ def evaluate_manual_rules(row: dict[str, Any], path: Path | None = None) -> dict
         field = str(rule.get("field") or "")
         weight = int(rule.get("weight") or 0)
         mode = str(rule.get("mode") or "must_pass")
+        source = str(rule.get("source") or "manual")
 
-        evidences.append(f"{rid}:{field}={evidence}")
+        status = "PASS" if passed else "FAIL"
+        evidences.append(f"[{status}] {rid} ({source}) {field}={evidence}")
 
         if mode == "risk_penalty":
             if not passed:
                 score -= weight
                 risks.append(str(rule.get("risk_label") or rid))
                 recommendations.append(str(rule.get("recommendation") or ""))
+                failed_rule_ids.append(rid)
             continue
 
         if passed:
@@ -178,6 +182,7 @@ def evaluate_manual_rules(row: dict[str, Any], path: Path | None = None) -> dict
             score -= weight
             risks.append(str(rule.get("risk_label") or rid))
             recommendations.append(str(rule.get("recommendation") or ""))
+            failed_rule_ids.append(rid)
 
     score = max(min_score, min(max_score, score))
 
@@ -199,6 +204,7 @@ def evaluate_manual_rules(row: dict[str, Any], path: Path | None = None) -> dict
         "score": score,
         "verdict": verdict,
         "risks": risks,
+        "failed_rule_ids": failed_rule_ids,
         "recommendations": recommendations[:5],
         "evidence": evidences[:12],
         "withdrawal_script": script,

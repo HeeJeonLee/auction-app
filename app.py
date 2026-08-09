@@ -36,6 +36,7 @@ from vision_extractor import (
     build_case_briefing,
     assess_image_quality,
     build_recapture_guidance,
+    summarize_extraction_quality,
 )
 
 st.set_page_config(
@@ -976,6 +977,19 @@ elif analyze_clicked and uploaded_files:
                         st.session_state.processing_log.append("⚠️ API 호출 한도 초과 - 이미지 자동 판독 보류 데이터로 처리")
                     else:
                         st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
+                        try:
+                            quality_summary = summarize_extraction_quality(vision_df)
+                            st.session_state.processing_log.append(
+                                f"✓ OCR 복원 핵심필드 채움률: {quality_summary.get('core_fill_rate', 0):.1f}%"
+                            )
+                            fill_map = quality_summary.get("field_fill", {})
+                            if fill_map:
+                                st.caption(
+                                    "핵심 필드 채움률: "
+                                    + ", ".join([f"{k} {v:.0f}%" for k, v in fill_map.items()])
+                                )
+                        except Exception:
+                            pass
                     excel_dfs.append(vision_df)
                 except Exception as e:
                     st.error("❌ AI 분석 오류: AI 호출이 일시 실패했습니다. 잠시 후 다시 시도하거나 CSV/XLSX 업로드로 진행해 주세요.")

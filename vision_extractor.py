@@ -1137,6 +1137,34 @@ def _merge_extracted_rows(rows: list[dict[str, Any]], default_columns: List[str]
     return merged_rows
 
 
+def summarize_extraction_quality(df: pd.DataFrame) -> dict[str, Any]:
+    """핵심 필드 채움률을 계산해 OCR 복원 품질을 요약한다."""
+    if df is None or df.empty:
+        return {
+            "rows": 0,
+            "core_fill_rate": 0.0,
+            "field_fill": {},
+        }
+
+    core_fields = ["사건번호", "법원명", "주소", "아파트명", "감정가", "부채총액", "KB시세", "주요채권자"]
+    field_fill: dict[str, float] = {}
+
+    for field in core_fields:
+        if field not in df.columns:
+            field_fill[field] = 0.0
+            continue
+        series = df[field].astype(str).str.strip()
+        valid = series.ne("") & series.ne("0") & ~series.str.contains("미상|판독불가|정보없음", na=False)
+        field_fill[field] = round(float(valid.mean()) * 100.0, 2)
+
+    core_fill_rate = round(sum(field_fill.values()) / max(1, len(core_fields)), 2)
+    return {
+        "rows": int(len(df)),
+        "core_fill_rate": core_fill_rate,
+        "field_fill": field_fill,
+    }
+
+
 def _process_images_with_gemini(api_key: str, image_files: List[Any], default_columns: List[str], mode: str = "balanced") -> pd.DataFrame:
     """
     최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
