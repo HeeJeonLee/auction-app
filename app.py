@@ -540,26 +540,32 @@ with st.expander("🛟 429 우회: 캡처 텍스트 직접 붙여넣기", expand
             st.success("✅ 텍스트 직접 분석이 완료되었습니다. 아래 대시보드에서 결과를 확인하세요.")
 
 if uploaded_files:
-    st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")
-    quality_cols = st.columns(min(3, len(uploaded_files)))
-    for idx, uploaded_file in enumerate(uploaded_files):
-        if is_image_upload(uploaded_file):
-            try:
-                quality = assess_image_quality(uploaded_file.getvalue())
-                with quality_cols[idx % len(quality_cols)]:
-                    st.image(uploaded_file, use_container_width=True)
-                    profile_name = {
-                        "mobile_long": "긴 모바일 캡처",
-                        "table_dense": "표 밀집 문서",
-                        "mixed_ui": "혼합 화면",
-                    }.get(str(quality.get("profile") or "mixed_ui"), "혼합 화면")
-                    st.caption(
-                        f"품질 점수: {quality.get('score', 50)} (기준 {quality.get('recommended_min_score', 64)}) "
-                        f"/ 유형: {profile_name} / 캡처 보정 필요: {'예' if quality.get('needs_recapture') else '아니오'}"
-                    )
-                    st.write(build_recapture_guidance(quality))
-            except Exception as preview_error:
-                st.warning(f"이미지 미리보기 중 오류가 발생했습니다: {uploaded_file.name} / {type(preview_error).__name__}")
+    try:
+        st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")
+        quality_cols = st.columns(max(1, min(3, len(uploaded_files))))
+        for idx, uploaded_file in enumerate(uploaded_files):
+            if is_image_upload(uploaded_file):
+                try:
+                    quality = assess_image_quality(uploaded_file.getvalue())
+                    with quality_cols[idx % len(quality_cols)]:
+                        st.image(uploaded_file, use_container_width=True)
+                        profile_name = {
+                            "mobile_long": "긴 모바일 캡처",
+                            "table_dense": "표 밀집 문서",
+                            "mixed_ui": "혼합 화면",
+                        }.get(str(quality.get("profile") or "mixed_ui"), "혼합 화면")
+                        st.caption(
+                            f"품질 점수: {quality.get('score', 50)} (기준 {quality.get('recommended_min_score', 64)}) "
+                            f"/ 유형: {profile_name} / 캡처 보정 필요: {'예' if quality.get('needs_recapture') else '아니오'}"
+                        )
+                        st.write(build_recapture_guidance(quality))
+                except Exception as preview_error:
+                    st.warning(f"이미지 미리보기 중 오류가 발생했습니다: {uploaded_file.name} / {type(preview_error).__name__}")
+    except Exception as preview_block_error:
+        st.warning(
+            "미리보기 블록에서 오류가 발생해 해당 단계를 건너뜁니다. "
+            f"분석은 계속 진행 가능합니다. ({type(preview_block_error).__name__})"
+        )
 
 analyze_clicked = st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width=True)
 
@@ -567,134 +573,137 @@ if analyze_clicked and not uploaded_files:
     st.warning("업로드된 파일이 없습니다. 캡처 이미지 또는 XLSX/CSV를 먼저 업로드해 주세요.")
 
 elif analyze_clicked and uploaded_files:
-    image_files = []
-    excel_dfs = []
-    
-    st.session_state.processing_log = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    status_text.markdown("### 📊 처리 진행 상황")
-    
-    # 1단계: 파일 분류
-    status_text.markdown("#### 1/4 파일 분류 중...")
-    progress_bar.progress(25)
-    time.sleep(0.5)
-    
-    for file in uploaded_files:
-        try:
-            file_ext = str(getattr(file, "name", "") or "").lower()
-            if file_ext.endswith((".csv", ".xlsx")):
-                st.session_state.processing_log.append(f"✓ 엑셀 파일 감지: {file.name}")
-                df = pd.read_csv(file) if file_ext.endswith(".csv") else pd.read_excel(file)
-                excel_dfs.append(df)
-            elif is_image_upload(file):
-                st.session_state.processing_log.append(f"✓ 이미지 파일 감지: {file.name}")
-                image_files.append(file)
-            else:
-                st.session_state.processing_log.append(f"⚠️ 지원하지 않는 파일 형식: {file.name}")
-        except Exception as file_error:
-            st.session_state.processing_log.append(
-                f"✗ 파일 분류/로드 실패: {getattr(file, 'name', 'unknown')} ({type(file_error).__name__})"
-            )
-    
-    # 2단계: Vision AI 분석
-    if image_files:
-        status_text.markdown(f"#### 2/4 Vision AI 분석 중... ({len(image_files)}개 이미지)")
-        progress_bar.progress(50)
-        
-        if st.session_state.api_key or ocr_engine in {"auto", "local_hybrid"}:
-            try:
-                if ocr_engine == "gemini":
-                    st.session_state.processing_log.append("🤖 Google Gemini AI 시작...")
-                elif ocr_engine == "local_hybrid":
-                    st.session_state.processing_log.append("🆓 로컬 무료 OCR(PaddleOCR+Tesseract) 시작...")
-                else:
-                    st.session_state.processing_log.append("🤖/🆓 자동 엔진 선택 실행...")
+    try:
+        image_files = []
+        excel_dfs = []
 
-                vision_df = process_images_to_dataframe(
-                    st.session_state.api_key,
-                    image_files,
-                    DEFAULT_COLUMNS,
-                    mode=ocr_mode,
-                    engine=ocr_engine,
-                )
-                is_quota_hold = (
-                    not vision_df.empty
-                    and "사건번호" in vision_df.columns
-                    and vision_df["사건번호"].astype(str).eq("AI쿼터대기").all()
-                )
-                if is_quota_hold:
-                    st.warning("⚠️ Gemini 호출 한도(429)로 이미지 자동 판독이 일시 보류되었습니다. 1~2분 후 다시 시도해 주세요.")
-                    st.session_state.processing_log.append("⚠️ API 호출 한도 초과 - 이미지 자동 판독 보류 데이터로 처리")
-                else:
-                    st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
-                excel_dfs.append(vision_df)
-            except Exception as e:
-                st.error("❌ AI 분석 오류: AI 호출이 일시 실패했습니다. 잠시 후 다시 시도하거나 CSV/XLSX 업로드로 진행해 주세요.")
-                st.caption(f"상세: {str(e)[:220]}")
-                st.session_state.processing_log.append(f"✗ AI 오류: {str(e)}")
-        else:
-            st.warning("⚠️ Gemini 모드에서는 API 키가 필요합니다")
-            st.session_state.processing_log.append("⚠️ Gemini 모드 + API 키 미입력 - 이미지 분석 생략")
-            if not excel_dfs:
-                st.info("Gemini API 키를 입력하거나 OCR 엔진을 '로컬 무료' 또는 '자동'으로 변경해 주세요.")
-    
-    # 3단계: 데이터 통합
-    status_text.markdown("#### 3/4 데이터 통합 및 심사...")
-    progress_bar.progress(75)
-    time.sleep(0.3)
-    
-    if excel_dfs:
-        combined_df = pd.concat(excel_dfs, ignore_index=True)
-        st.session_state.processing_log.append(f"✓ 총 {len(combined_df)}건 데이터 통합")
-        
-        enriched_df = enrich_dataframe(combined_df)
-        st.session_state.df = enriched_df
-        st.session_state.processing_log.append("✓ 심사 로직 적용 완료")
-        
-        # 4단계: 이미지 필터링
-        status_text.markdown("#### 4/4 적격 자산 이미지 보관...")
-        progress_bar.progress(90)
-        
-        approved_df = enriched_df[enriched_df["심사상태"].str.contains("적격", na=False)]
-        approved_filenames = approved_df["원본파일명"].astype(str).tolist()
-        
-        temp_approved_images = [img for img in image_files if img.name in approved_filenames]
-        st.session_state.uploaded_images = temp_approved_images
-        st.session_state.processing_log.append(f"✓ 적격 {len(temp_approved_images)}건 이미지 보관")
-        st.session_state.processing_log.append(f"✓ 부적격 {len(image_files) - len(temp_approved_images)}건 이미지 자동 삭제")
-        
-        progress_bar.progress(100)
-        status_text.markdown("#### ✅ 분석 완료!")
+        st.session_state.processing_log = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        status_text.markdown("### 📊 처리 진행 상황")
+
+        status_text.markdown("#### 1/4 파일 분류 중...")
+        progress_bar.progress(25)
         time.sleep(0.5)
-        
-        st.success("🎉 심층 평가 완료! 스크롤을 내려 결과를 확인하세요")
-        
-        # 처리 로그 표시
-        with st.expander("📋 상세 처리 로그 보기"):
-            for log in st.session_state.processing_log:
-                st.text(log)
 
-        if not st.session_state.df.empty:
-            st.markdown("### 🧠 자동 정리 결과")
-            st.caption("캡처본에서 추출된 핵심 사실이 권리분석과 대응 브리핑으로 이어지는 흐름을 바로 확인할 수 있습니다.")
-            for _, row in st.session_state.df.head(3).iterrows():
-                summary = build_structured_case_summary(row.to_dict())
-                with st.container():
-                    st.markdown(f"#### 📌 {row.get('사건번호','미상')}")
-                    st.write(summary["자동정리요약"])
-                    col_a, col_b = st.columns([2, 1])
-                    with col_a:
-                        st.info(f"정리상태: {summary['정리상태']} / 완성도: {summary['완성도']}%")
-                    with col_b:
-                        st.success(f"보완 필요 필드: {', '.join(summary.get('누락필드', [])) or '없음'}")
-                    st.write(build_case_briefing(row.to_dict()))
-                    st.divider()
-    else:
-        progress_bar.progress(100)
-        status_text.markdown("#### ⚠️ 처리할 데이터가 없습니다")
-        st.warning("처리할 데이터가 생성되지 않았습니다. API 키/업로드 파일 형식/파일 내용을 확인해 주세요.")
+        for file in uploaded_files:
+            try:
+                file_ext = str(getattr(file, "name", "") or "").lower()
+                if file_ext.endswith((".csv", ".xlsx")):
+                    st.session_state.processing_log.append(f"✓ 엑셀 파일 감지: {file.name}")
+                    df = pd.read_csv(file) if file_ext.endswith(".csv") else pd.read_excel(file)
+                    excel_dfs.append(df)
+                elif is_image_upload(file):
+                    st.session_state.processing_log.append(f"✓ 이미지 파일 감지: {file.name}")
+                    image_files.append(file)
+                else:
+                    st.session_state.processing_log.append(f"⚠️ 지원하지 않는 파일 형식: {file.name}")
+            except Exception as file_error:
+                st.session_state.processing_log.append(
+                    f"✗ 파일 분류/로드 실패: {getattr(file, 'name', 'unknown')} ({type(file_error).__name__})"
+                )
+
+        if image_files:
+            status_text.markdown(f"#### 2/4 Vision AI 분석 중... ({len(image_files)}개 이미지)")
+            progress_bar.progress(50)
+
+            if st.session_state.api_key or ocr_engine in {"auto", "local_hybrid"}:
+                try:
+                    if ocr_engine == "gemini":
+                        st.session_state.processing_log.append("🤖 Google Gemini AI 시작...")
+                    elif ocr_engine == "local_hybrid":
+                        st.session_state.processing_log.append("🆓 로컬 무료 OCR(PaddleOCR+Tesseract) 시작...")
+                    else:
+                        st.session_state.processing_log.append("🤖/🆓 자동 엔진 선택 실행...")
+
+                    vision_df = process_images_to_dataframe(
+                        st.session_state.api_key,
+                        image_files,
+                        DEFAULT_COLUMNS,
+                        mode=ocr_mode,
+                        engine=ocr_engine,
+                    )
+                    is_quota_hold = (
+                        not vision_df.empty
+                        and "사건번호" in vision_df.columns
+                        and vision_df["사건번호"].astype(str).eq("AI쿼터대기").all()
+                    )
+                    if is_quota_hold:
+                        st.warning("⚠️ Gemini 호출 한도(429)로 이미지 자동 판독이 일시 보류되었습니다. 1~2분 후 다시 시도해 주세요.")
+                        st.session_state.processing_log.append("⚠️ API 호출 한도 초과 - 이미지 자동 판독 보류 데이터로 처리")
+                    else:
+                        st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
+                    excel_dfs.append(vision_df)
+                except Exception as e:
+                    st.error("❌ AI 분석 오류: AI 호출이 일시 실패했습니다. 잠시 후 다시 시도하거나 CSV/XLSX 업로드로 진행해 주세요.")
+                    st.caption(f"상세: {str(e)[:220]}")
+                    st.session_state.processing_log.append(f"✗ AI 오류: {str(e)}")
+            else:
+                st.warning("⚠️ Gemini 모드에서는 API 키가 필요합니다")
+                st.session_state.processing_log.append("⚠️ Gemini 모드 + API 키 미입력 - 이미지 분석 생략")
+                if not excel_dfs:
+                    st.info("Gemini API 키를 입력하거나 OCR 엔진을 '로컬 무료' 또는 '자동'으로 변경해 주세요.")
+
+        status_text.markdown("#### 3/4 데이터 통합 및 심사...")
+        progress_bar.progress(75)
+        time.sleep(0.3)
+
+        if excel_dfs:
+            combined_df = pd.concat(excel_dfs, ignore_index=True)
+            st.session_state.processing_log.append(f"✓ 총 {len(combined_df)}건 데이터 통합")
+
+            enriched_df = enrich_dataframe(combined_df)
+            st.session_state.df = enriched_df
+            st.session_state.processing_log.append("✓ 심사 로직 적용 완료")
+
+            status_text.markdown("#### 4/4 적격 자산 이미지 보관...")
+            progress_bar.progress(90)
+
+            approved_df = enriched_df[enriched_df["심사상태"].str.contains("적격", na=False)]
+            approved_filenames = approved_df["원본파일명"].astype(str).tolist()
+
+            temp_approved_images = [img for img in image_files if img.name in approved_filenames]
+            st.session_state.uploaded_images = temp_approved_images
+            st.session_state.processing_log.append(f"✓ 적격 {len(temp_approved_images)}건 이미지 보관")
+            st.session_state.processing_log.append(f"✓ 부적격 {len(image_files) - len(temp_approved_images)}건 이미지 자동 삭제")
+
+            progress_bar.progress(100)
+            status_text.markdown("#### ✅ 분석 완료!")
+            time.sleep(0.5)
+
+            st.success("🎉 심층 평가 완료! 스크롤을 내려 결과를 확인하세요")
+
+            with st.expander("📋 상세 처리 로그 보기"):
+                for log in st.session_state.processing_log:
+                    st.text(log)
+
+            if not st.session_state.df.empty:
+                st.markdown("### 🧠 자동 정리 결과")
+                st.caption("캡처본에서 추출된 핵심 사실이 권리분석과 대응 브리핑으로 이어지는 흐름을 바로 확인할 수 있습니다.")
+                for _, row in st.session_state.df.head(3).iterrows():
+                    summary = build_structured_case_summary(row.to_dict())
+                    with st.container():
+                        st.markdown(f"#### 📌 {row.get('사건번호','미상')}")
+                        st.write(summary["자동정리요약"])
+                        col_a, col_b = st.columns([2, 1])
+                        with col_a:
+                            st.info(f"정리상태: {summary['정리상태']} / 완성도: {summary['완성도']}%")
+                        with col_b:
+                            st.success(f"보완 필요 필드: {', '.join(summary.get('누락필드', [])) or '없음'}")
+                        st.write(build_case_briefing(row.to_dict()))
+                        st.divider()
+        else:
+            progress_bar.progress(100)
+            status_text.markdown("#### ⚠️ 처리할 데이터가 없습니다")
+            st.warning("처리할 데이터가 생성되지 않았습니다. API 키/업로드 파일 형식/파일 내용을 확인해 주세요.")
+
+    except Exception as pipeline_error:
+        st.error(
+            "❌ 분석 파이프라인에서 오류가 발생했습니다. "
+            "텍스트 직접 분석 또는 CSV/XLSX 업로드 모드로 우선 진행해 주세요."
+        )
+        st.caption(f"오류 유형: {type(pipeline_error).__name__}")
 
 df = st.session_state.df
 
