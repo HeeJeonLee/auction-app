@@ -825,6 +825,19 @@ elif "로컬 무료" in ocr_engine_label:
 else:
     ocr_engine = "auto"
 
+ocr_speed_label = st.selectbox(
+    "⚡ OCR 처리 속도",
+    options=["균형(권장)", "정확도 우선", "고속(대량 캡처)"],
+    index=0,
+    help="대량 캡처에서는 고속 모드가 처리시간을 줄입니다. 정확도 우선은 시간이 더 걸릴 수 있습니다.",
+)
+if "정확도" in ocr_speed_label:
+    ocr_speed_profile = "quality"
+elif "고속" in ocr_speed_label:
+    ocr_speed_profile = "fast"
+else:
+    ocr_speed_profile = "balanced"
+
 with st.expander("🛟 429 우회: 캡처 텍스트 직접 붙여넣기", expanded=False):
     pasted_text = st.text_area(
         "탱크옥션/KB 화면에서 텍스트를 복사해 붙여넣으세요",
@@ -942,6 +955,7 @@ elif analyze_clicked and uploaded_files:
                         DEFAULT_COLUMNS,
                         mode=ocr_mode,
                         engine=ocr_engine,
+                        speed_profile=ocr_speed_profile,
                     )
                     is_quota_hold = (
                         not vision_df.empty

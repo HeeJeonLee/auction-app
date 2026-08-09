@@ -662,7 +662,7 @@ def _get_paddle_ocr() -> Any:
     return _PADDLE_OCR_INSTANCE
 
 
-def _build_local_ocr_variants(image_bytes: bytes, mode: str) -> list[Image.Image]:
+def _build_local_ocr_variants(image_bytes: bytes, mode: str, speed_profile: str = "balanced", bulk_mode: bool = False) -> list[Image.Image]:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
     w, h = img.size
@@ -679,15 +679,21 @@ def _build_local_ocr_variants(image_bytes: bytes, mode: str) -> list[Image.Image
 
     if mode == "text_first":
         variants = [sharp, bw_soft, bw_hard]
+        if speed_profile == "fast":
+            variants = [sharp, bw_soft]
 
         # 긴 모바일 캡처는 세로 분할 변형을 추가해 작은 글자 판독률을 높인다.
         w, h = sharp.size
         if h >= 1500:
-            strip_h = 1300
+            strip_h = 1300 if speed_profile != "fast" else 1500
             overlap = 180
             y = 0
             strip_count = 0
             max_strip_count = 8
+            if bulk_mode:
+                max_strip_count = 4
+            if speed_profile == "fast":
+                max_strip_count = min(max_strip_count, 3)
             while y < h:
                 y2 = min(h, y + strip_h)
                 variants.append(sharp.crop((0, y, w, y2)))
@@ -700,6 +706,9 @@ def _build_local_ocr_variants(image_bytes: bytes, mode: str) -> list[Image.Image
                 y = y2 - overlap
 
         return variants
+
+    if speed_profile == "fast":
+        return [gray, sharp]
     return [gray, sharp, bw_soft]
 
 
@@ -881,7 +890,12 @@ def _parse_text_to_row(raw_text: str, default_columns: List[str], image_name: st
     return _normalize_extracted_row(row)
 
 
-def _process_images_with_local_hybrid(image_files: List[Any], default_columns: List[str], mode: str = "balanced") -> pd.DataFrame:
+def _process_images_with_local_hybrid(
+    image_files: List[Any],
+    default_columns: List[str],
+    mode: str = "balanced",
+    speed_profile: str = "balanced",
+) -> pd.DataFrame:
     paddle_ok = _get_paddle_ocr() is not None and np is not None
     tesseract_ok = pytesseract is not None
     if not paddle_ok and not tesseract_ok:
@@ -890,10 +904,20 @@ def _process_images_with_local_hybrid(image_files: List[Any], default_columns: L
         )
 
     rows: list[dict[str, Any]] = []
+    bulk_mode = len(image_files) >= 40
+    tesseract_retry_count = 0
+    tesseract_retry_limit = max(12, len(image_files) // 3)
+    if speed_profile == "fast":
+        tesseract_retry_limit = max(6, len(image_files) // 5)
 
     for img_file in image_files:
         image_bytes = img_file.getvalue()
-        variants = _build_local_ocr_variants(image_bytes, mode)
+        variants = _build_local_ocr_variants(
+            image_bytes,
+            mode,
+            speed_profile=speed_profile,
+            bulk_mode=bulk_mode,
+        )
 
         paddle_res = _run_paddle_ocr_text(variants) if paddle_ok else {"text": "", "confidence": 0.0}
         paddle_row = _build_best_row_from_ocr_candidates(
@@ -907,7 +931,11 @@ def _process_images_with_local_hybrid(image_files: List[Any], default_columns: L
         final_row = paddle_row
         tesseract_used = False
 
-        if tesseract_ok and _needs_tesseract_retry(paddle_row, float(paddle_res.get("confidence", 0.0))):
+        if (
+            tesseract_ok
+            and tesseract_retry_count < tesseract_retry_limit
+            and _needs_tesseract_retry(paddle_row, float(paddle_res.get("confidence", 0.0)))
+        ):
             tesseract_res = _run_tesseract_ocr_text(variants)
             tess_row = _build_best_row_from_ocr_candidates(
                 tesseract_res.get("candidates", []),
@@ -921,6 +949,7 @@ def _process_images_with_local_hybrid(image_files: List[Any], default_columns: L
             if _core_field_score(merged_row) >= _core_field_score(paddle_row):
                 final_row = merged_row
                 tesseract_used = True
+            tesseract_retry_count += 1
 
         auto_summary = build_structured_case_summary(final_row)
         final_row["권리요약"] = auto_summary["자동정리요약"]
@@ -1314,6 +1343,7 @@ def process_images_to_dataframe(
     default_columns: List[str],
     mode: str = "balanced",
     engine: str = "auto",
+    speed_profile: str = "balanced",
 ) -> pd.DataFrame:
     """이미지 OCR 파이프라인 진입점.
 
@@ -1327,7 +1357,7 @@ def process_images_to_dataframe(
         normalized_engine = "auto"
 
     if normalized_engine == "local_hybrid":
-        return _process_images_with_local_hybrid(image_files, default_columns, mode=mode)
+        return _process_images_with_local_hybrid(image_files, default_columns, mode=mode, speed_profile=speed_profile)
 
     if normalized_engine == "gemini":
         return _process_images_with_gemini(api_key, image_files, default_columns, mode=mode)
@@ -1335,4 +1365,4 @@ def process_images_to_dataframe(
     can_use_gemini = bool(str(api_key or "").strip()) and genai is not None
     if can_use_gemini:
         return _process_images_with_gemini(api_key, image_files, default_columns, mode=mode)
-    return _process_images_with_local_hybrid(image_files, default_columns, mode=mode)
+    return _process_images_with_local_hybrid(image_files, default_columns, mode=mode, speed_profile=speed_profile)
