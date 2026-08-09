@@ -448,43 +448,45 @@ with flow_col3:
     )
 
 with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expanded=False):
-    st.markdown("""
-    ## 권리분석 고도화 매뉴얼
-    아래 문서는 실무자가 읽기 좋은 형태의 확장 매뉴얼입니다. 전체 실무서 문서는 [docs/04_권리분석_실무와_경매_취하_유도_프로세스.md](docs/04_권리분석_실무와_경매_취하_유도_프로세스.md) 에 정리되어 있습니다.
-    이 매뉴얼은 사건 구조 파악, 리스크 해석, 대응 포인트 정리, 실전 브리핑까지 이어지는 실무 흐름을 한 번에 확인할 수 있도록 구성한 실무 가이드입니다.
+    manual_100p_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무_매뉴얼_100p.md"
+    manual_process_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무와_경매_취하_유도_프로세스.md"
 
-    ### 1. 이 매뉴얼을 읽는 목적
-    - 플랫폼이 사건을 분석할 때, 단순한 요약이 아니라 ‘근거 기반 판단’으로 이어지게 합니다.
-    - 채권자별 패턴, 리스크 구조, 대응 방향을 체계적으로 누적해 반복 학습이 가능하게 합니다.
-    - 사용자가 읽을 때도, 플랫폼이 판단하는 방식이 무엇인지 자연스럽게 이해할 수 있습니다.
+    manual_100p_text = ""
+    manual_process_text = ""
+    try:
+        if manual_100p_path.exists():
+            manual_100p_text = manual_100p_path.read_text(encoding="utf-8")
+        if manual_process_path.exists():
+            manual_process_text = manual_process_path.read_text(encoding="utf-8")
+    except Exception as manual_error:
+        st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
 
-    ### 2. 권리분석의 기본 틀
-    권리분석은 다음 3가지 축으로 구성됩니다.
-    1. 근거: 사실관계를 확인할 수 있는 자료를 정리합니다.
-    2. 리스크: 권리상 문제와 회수 가능성의 위험 요소를 구분합니다.
-    3. 행동안: 실제 대응 전략과 협상 방향을 제시합니다.
+    st.markdown("### 권리분석 고도화 매뉴얼")
+    st.info("요약문이 아니라 문서 원문을 앱에서 직접 확인할 수 있도록 구성했습니다.")
 
-    ### 3. 채권자별 패턴 누적
-    - 1금융: 규정이 엄격하므로 실질 배당 손실을 숫자로 보여주는 방식이 효과적입니다.
-    - 2/3금융: 수익과 배당액을 우선하므로 자금 구조와 헤어컷 수치가 핵심입니다.
-    - 유동화/NPL: 현금 회수 선호, 신속 상환·현금성 조건 제안이 중요합니다.
-    - 공공/조세채권: 공공성과 법적 절차가 강해 협의 대상이 제한적입니다.
+    if manual_100p_text:
+        st.download_button(
+            "📥 100p 매뉴얼 다운로드 (Markdown)",
+            data=manual_100p_text,
+            file_name="04_권리분석_실무_매뉴얼_100p.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+        st.caption("아래는 100p 매뉴얼 원문 미리보기(앞부분)입니다.")
+        st.markdown(manual_100p_text[:12000])
+    else:
+        st.warning("100p 매뉴얼 파일이 없어 미리보기를 표시할 수 없습니다.")
 
-    ### 4. 근거 / 리스크 / 행동안 구조화
-    - 근거: 등기부, 시세, 경매 공고, 채권자 정보, 공공자료를 바탕으로 사실관계를 정리합니다.
-    - 리스크: 권리상 하자, 배당 순위, 비용 부담, 회수 지연 가능성, 채권자별 대응 난이도를 구분합니다.
-    - 행동안: 실제 협상 또는 대응 방안을 숫자·조건·우선순위 중심으로 제시합니다.
-
-    ### 5. 실무 판단 기준의 지속적 업데이트
-    - 사건마다 채권자별 성향, 권리 리스크 패턴, 협상 포인트를 기록합니다.
-    - 유사 사건이 반복될 때는 기존 근거와 판단 기준을 재사용해 일관성을 유지합니다.
-    - 분석의 품질이 높아질수록 플랫폼의 판단 문서와 실무 대응의 완성도가 함께 향상됩니다.
-
-    ### 6. 이 매뉴얼이 플랫폼에 반영되는 방식
-    - 분석 결과는 반드시 근거, 리스크, 행동안으로 분리해 정리됩니다.
-    - 채권자별 패턴은 이후 사건 분석의 기준 자료로 누적됩니다.
-    - 판단 기준은 반복적으로 업데이트되어, 플랫폼이 점점 더 실무형 판단 기준에 가깝게 발전합니다.
-    """)
+    if manual_process_text:
+        with st.expander("보조 문서: 권리분석 실무와 경매 취하 유도 프로세스", expanded=False):
+            st.download_button(
+                "📥 보조 문서 다운로드",
+                data=manual_process_text,
+                file_name="04_권리분석_실무와_경매_취하_유도_프로세스.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+            st.markdown(manual_process_text[:8000])
 
 col_api1, col_api2 = st.columns([3, 1])
 with col_api1:
