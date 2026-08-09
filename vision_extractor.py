@@ -264,6 +264,7 @@ def _to_rows(parsed_data: Any, image_name: str, default_columns: List[str]) -> l
             if not row.get("원본파일명"):
                 row["원본파일명"] = image_name
             row["AI_심층분석"] = data.get("AI_심층분석", "")
+            row = _apply_registry_entries(row, data)
         else:
             row["원본파일명"] = image_name
             row["사건번호"] = "판독불가"
@@ -360,6 +361,93 @@ def _normalize_extracted_row(row: dict[str, Any]) -> dict[str, Any]:
             normalized[field] = re.sub(r"\s+", " ", _norm_text(normalized.get(field)))
 
     return normalized
+
+
+def _normalize_registry_entries(raw_entries: Any) -> list[dict[str, Any]]:
+    """권리항목목록 필드를 표준 dict 리스트로 정규화한다."""
+    if raw_entries is None:
+        return []
+
+    entries = raw_entries
+    if isinstance(raw_entries, str):
+        text = raw_entries.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                entries = json.loads(text)
+            except Exception:
+                entries = []
+
+    if not isinstance(entries, list):
+        return []
+
+    result = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        result.append({
+            "종류": _norm_text(e.get("종류") or e.get("type")),
+            "권리자": _norm_text(e.get("권리자") or e.get("holder") or e.get("creditor")),
+            "금액": _normalize_amount_text(e.get("금액") or e.get("amount") or e.get("채권금액")),
+            "소멸": _norm_text(e.get("소멸") or e.get("extinct")),
+            "접수": _norm_text(e.get("접수") or e.get("접수일") or e.get("date")),
+        })
+    return result
+
+
+def _apply_registry_entries(row: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    """등기표 구조 데이터를 읽어 권리 플래그/채권자/부채 추정치를 보강한다."""
+    enriched = dict(row)
+
+    raw_entries = (
+        data.get("권리항목목록")
+        or data.get("rights_entries")
+        or data.get("registry_entries")
+    )
+    entries = _normalize_registry_entries(raw_entries)
+    if not entries:
+        return enriched
+
+    claim_sum = 0.0
+    main_creditor = _norm_text(enriched.get("주요채권자"))
+
+    for entry in entries:
+        kind = entry["종류"]
+        holder = entry["권리자"]
+        amount = _safe_float(entry["금액"])
+
+        if not main_creditor and holder:
+            main_creditor = holder
+
+        if "근저당" in kind:
+            enriched["근저당여부"] = "예"
+            claim_sum += amount
+        if "가압류" in kind:
+            enriched["가압류여부"] = "예"
+            claim_sum += amount
+        if "가처분" in kind:
+            enriched["가처분여부"] = "예"
+        if "압류" in kind and "가압류" not in kind:
+            enriched["압류여부"] = "예"
+        if "임차권" in kind:
+            enriched["임차권등기여부"] = "예"
+            claim_sum += amount
+        if "전세권" in kind:
+            enriched["전세권여부"] = "예"
+            claim_sum += amount
+        if "가등기" in kind:
+            enriched["가등기여부"] = "예"
+
+        if "청구" in kind:
+            claim_sum = max(claim_sum, amount)
+
+    if main_creditor:
+        enriched["주요채권자"] = main_creditor
+
+    existing_debt = _safe_float(enriched.get("부채총액"))
+    if claim_sum > existing_debt:
+        enriched["부채총액"] = str(int(claim_sum))
+
+    return enriched
 
 
 def _group_case_key(row: dict[str, Any]) -> str:
@@ -542,7 +630,16 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
         "임차권등기여부": "",
         "전세권여부": "",
         "가등기여부": "",
-        "AI_심층분석": ""
+                "AI_심층분석": "",
+                "권리항목목록": [
+                    {
+                        "접수": "",
+                        "종류": "",
+                        "권리자": "",
+                        "금액": "",
+                        "소멸": ""
+                    }
+                ]
       }
     ]
     """

@@ -12,6 +12,7 @@ from vision_extractor import (
     _merge_extracted_rows,
     _build_image_parts_for_mode,
     _normalize_extracted_row,
+    _to_rows,
 )
 
 
@@ -192,3 +193,28 @@ def test_normalize_extracted_row_cleans_core_fields():
     assert row["근저당여부"] == "예"
     assert row["압류여부"] == "아니오"
     assert row["주요채권자"] == "유더블유제십오차유동화전문유한회사"
+
+
+def test_registry_entries_enrich_flags_and_debt():
+    default_columns = [
+        "원본파일명", "사건번호", "부채총액", "주요채권자", "근저당여부", "압류여부", "가압류여부",
+        "가처분여부", "임차권등기여부", "전세권여부", "가등기여부", "AI_심층분석", "권리요약", "담당자메모", "심사상태",
+    ]
+
+    parsed = [{
+        "원본파일명": "registry.png",
+        "사건번호": "2024타경2979",
+        "권리항목목록": [
+            {"접수": "2002.09.09", "종류": "근저당권설정", "권리자": "우리은행", "금액": "240,000,000", "소멸": "소멸"},
+            {"접수": "2023.11.16", "종류": "압류", "권리자": "국민건강보험공단", "금액": "", "소멸": "소멸"},
+            {"접수": "2024.10.10", "종류": "임의경매 청구", "권리자": "유더블유제십오차유동화전문유한회사", "금액": "202,774,869", "소멸": "소멸"},
+        ],
+    }]
+
+    rows = _to_rows(parsed, "registry.png", default_columns)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["근저당여부"] == "예"
+    assert row["압류여부"] == "예"
+    assert "유더블유" in row["주요채권자"] or "우리은행" in row["주요채권자"]
+    assert int(float(str(row["부채총액"] or "0"))) >= 202774869
