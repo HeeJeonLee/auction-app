@@ -472,8 +472,25 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
             mime="text/markdown",
             use_container_width=True,
         )
-        st.caption("아래는 100p 매뉴얼 원문 미리보기(앞부분)입니다.")
-        st.markdown(manual_100p_text[:12000])
+        st.caption("아래에서 전체 원문을 페이지 단위로 읽을 수 있습니다.")
+
+        page_size = 9000
+        total_pages = max(1, (len(manual_100p_text) + page_size - 1) // page_size)
+        selected_page = st.number_input(
+            "매뉴얼 페이지(문서 조각)",
+            min_value=1,
+            max_value=total_pages,
+            value=1,
+            step=1,
+            help="문서 길이가 길어 앱 성능을 위해 조각 단위로 표시합니다.",
+        )
+        start = (selected_page - 1) * page_size
+        end = min(len(manual_100p_text), start + page_size)
+        st.caption(f"표시 구간: {start + 1:,} ~ {end:,} / 전체 {len(manual_100p_text):,}자")
+        st.markdown(manual_100p_text[start:end])
+
+        with st.expander("원문 텍스트 뷰(복사용)", expanded=False):
+            st.text_area("100p 매뉴얼 원문", value=manual_100p_text, height=360)
     else:
         st.warning("100p 매뉴얼 파일이 없어 미리보기를 표시할 수 없습니다.")
 
@@ -507,13 +524,29 @@ with col_api2:
 
 st.markdown("---")
 
-uploaded_files = st.file_uploader(
-    "📤 PC/모바일 캡처 여러 장, 또는 엑셀 데이터를 드래그하여 일괄 업로드", 
-    type=["xlsx", "csv", "png", "jpg", "jpeg"], 
-    accept_multiple_files=True
+capture_files = st.file_uploader(
+    "📸 캡처본 전용 드래그 업로드 (여러 장 가능)",
+    type=["png", "jpg", "jpeg", "webp"],
+    accept_multiple_files=True,
+    key="capture_files_uploader",
+    help="이 영역에 캡처 이미지를 드래그 앤 드롭하세요.",
 )
 
-st.caption("권장 업로드 환경: PC 브라우저 (모바일도 가능). 대량 캡처/고해상도 파일은 PC 업로드가 더 안정적입니다.")
+data_files = st.file_uploader(
+    "📊 데이터 파일 업로드 (CSV/XLSX)",
+    type=["xlsx", "csv"],
+    accept_multiple_files=True,
+    key="data_files_uploader",
+    help="엑셀/CSV를 함께 분석하려면 여기에 업로드하세요.",
+)
+
+uploaded_files = []
+if capture_files:
+    uploaded_files.extend(capture_files)
+if data_files:
+    uploaded_files.extend(data_files)
+
+st.caption("권장 업로드 환경: PC 브라우저 드래그 업로드. 캡처와 CSV/XLSX는 분리 업로드가 더 안정적입니다.")
 
 with st.expander("🧾 OCR 누락 시 필수 9개 필드 수동 보완 가이드", expanded=False):
     st.markdown(
