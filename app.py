@@ -1,6 +1,7 @@
 import os
 import time
 import hashlib
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -391,6 +392,27 @@ def resolve_api_key() -> str:
         return ""
 
 
+@st.cache_data(show_spinner=False)
+def read_utf8_text_file(path_value: str) -> str:
+    path_obj = Path(path_value)
+    if not path_obj.exists():
+        return ""
+    return path_obj.read_text(encoding="utf-8")
+
+
+@st.cache_data(show_spinner=False)
+def build_manual_zip_bundle(manual_name: str, manual_text: str, process_name: str, process_text: str) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        if manual_text:
+            zf.writestr(manual_name, manual_text)
+            zf.writestr(manual_name.replace(".md", ".txt"), manual_text)
+        if process_text:
+            zf.writestr(process_name, process_text)
+            zf.writestr(process_name.replace(".md", ".txt"), process_text)
+    return buffer.getvalue()
+
+
 # API Key 관리
 if "api_key" not in st.session_state:
     st.session_state.api_key = resolve_api_key()
@@ -505,47 +527,79 @@ with flow_col3:
 with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expanded=False):
     manual_100p_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무와_경매_취하_유도_프로세스.md"
+    manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
+    manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
 
     manual_100p_text = ""
     manual_process_text = ""
     try:
-        if manual_100p_path.exists():
-            manual_100p_text = manual_100p_path.read_text(encoding="utf-8")
-        if manual_process_path.exists():
-            manual_process_text = manual_process_path.read_text(encoding="utf-8")
+        manual_100p_text = read_utf8_text_file(str(manual_100p_path))
+        manual_process_text = read_utf8_text_file(str(manual_process_path))
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
 
     st.markdown("### 권리분석 고도화 매뉴얼")
-    st.info("요약문이 아니라 문서 원문을 앱에서 직접 확인할 수 있도록 구성했습니다.")
+    st.info("원문은 캐시로 로딩하고, 미리보기는 요청 시에만 렌더링해 앱 속도 저하를 줄였습니다.")
 
     if manual_100p_text:
-        st.download_button(
-            "📥 100p 매뉴얼 다운로드 (Markdown)",
-            data=manual_100p_text,
-            file_name="04_권리분석_실무_매뉴얼_100p.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
-        st.caption("아래에서 전체 원문을 페이지 단위로 읽을 수 있습니다.")
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        with dl_col1:
+            st.download_button(
+                "📥 100p 매뉴얼 다운로드 (MD)",
+                data=manual_100p_text,
+                file_name=manual_100p_name,
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with dl_col2:
+            st.download_button(
+                "📥 100p 매뉴얼 다운로드 (TXT)",
+                data=manual_100p_text,
+                file_name=manual_100p_name.replace(".md", ".txt"),
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with dl_col3:
+            bundle_zip = build_manual_zip_bundle(
+                manual_100p_name,
+                manual_100p_text,
+                manual_process_name,
+                manual_process_text,
+            )
+            st.download_button(
+                "📥 매뉴얼 번들 다운로드 (ZIP)",
+                data=bundle_zip,
+                file_name="auction_manual_bundle.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
 
-        page_size = 9000
-        total_pages = max(1, (len(manual_100p_text) + page_size - 1) // page_size)
-        selected_page = st.number_input(
-            "매뉴얼 페이지(문서 조각)",
-            min_value=1,
-            max_value=total_pages,
-            value=1,
-            step=1,
-            help="문서 길이가 길어 앱 성능을 위해 조각 단위로 표시합니다.",
+        st.caption("미리보기는 필요할 때만 켜서 렌더링 비용을 줄입니다.")
+        enable_manual_preview = st.checkbox(
+            "100p 매뉴얼 미리보기 로드",
+            value=False,
+            key="manual_preview_toggle",
+            help="해제 상태에서는 다운로드만 제공하고 본문 렌더링을 생략해 속도를 유지합니다.",
         )
-        start = (selected_page - 1) * page_size
-        end = min(len(manual_100p_text), start + page_size)
-        st.caption(f"표시 구간: {start + 1:,} ~ {end:,} / 전체 {len(manual_100p_text):,}자")
-        st.markdown(manual_100p_text[start:end])
 
-        with st.expander("원문 텍스트 뷰(복사용)", expanded=False):
-            st.text_area("100p 매뉴얼 원문", value=manual_100p_text, height=360)
+        if enable_manual_preview:
+            page_size = 7000
+            total_pages = max(1, (len(manual_100p_text) + page_size - 1) // page_size)
+            selected_page = st.number_input(
+                "매뉴얼 페이지(문서 조각)",
+                min_value=1,
+                max_value=total_pages,
+                value=1,
+                step=1,
+                help="문서 길이가 길어 앱 성능을 위해 조각 단위로 표시합니다.",
+            )
+            start = (selected_page - 1) * page_size
+            end = min(len(manual_100p_text), start + page_size)
+            st.caption(f"표시 구간: {start + 1:,} ~ {end:,} / 전체 {len(manual_100p_text):,}자")
+            st.markdown(manual_100p_text[start:end])
+
+            with st.expander("원문 텍스트 뷰(복사용)", expanded=False):
+                st.text_area("100p 매뉴얼 원문", value=manual_100p_text, height=320)
     else:
         st.warning("100p 매뉴얼 파일이 없어 미리보기를 표시할 수 없습니다.")
 
