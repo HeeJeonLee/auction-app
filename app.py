@@ -865,15 +865,18 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_process_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무와_경매_취하_유도_프로세스.md"
     manual_mvp_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_검수본_v2.md"
     manual_p01_path = Path(__file__).resolve().parent / "docs" / "01_p01_사건식별_검수표_v1.md"
+    manual_p02_path = Path(__file__).resolve().parent / "docs" / "02_p02_사건번호정규화_검수표_v1.md"
     manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
     manual_mvp_name = "05_MVP_권리분석32p_취하18p_검수본_v2.md"
     manual_p01_name = "01_p01_사건식별_검수표_v1.md"
+    manual_p02_name = "02_p02_사건번호정규화_검수표_v1.md"
 
     manual_100p_text = ""
     manual_process_text = ""
     manual_mvp_text = ""
     manual_p01_text = ""
+    manual_p02_text = ""
     try:
         manual_100p_text = read_utf8_text_file(
             str(manual_100p_path),
@@ -890,6 +893,10 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
         manual_p01_text = read_utf8_text_file(
             str(manual_p01_path),
             manual_p01_path.stat().st_mtime if manual_p01_path.exists() else 0.0,
+        )
+        manual_p02_text = read_utf8_text_file(
+            str(manual_p02_path),
+            manual_p02_path.stat().st_mtime if manual_p02_path.exists() else 0.0,
         )
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
@@ -920,6 +927,27 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
         st.markdown(manual_p01_text)
     else:
         st.warning("p01 검수표 파일을 읽지 못했습니다. docs 경로를 확인해 주세요.")
+
+    if manual_p02_text:
+        with st.expander("다음 검수 페이지: p02 사건번호 정규화", expanded=False):
+            p02_col1, p02_col2 = st.columns(2)
+            with p02_col1:
+                st.download_button(
+                    "📥 p02 검수표 다운로드 (MD)",
+                    data=manual_p02_text,
+                    file_name=manual_p02_name,
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            with p02_col2:
+                st.download_button(
+                    "📥 p02 검수표 다운로드 (TXT)",
+                    data=manual_p02_text,
+                    file_name=manual_p02_name.replace(".md", ".txt"),
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            st.markdown(manual_p02_text)
 
     with st.expander("전체 매뉴얼 검토", expanded=False):
         if manual_mvp_text:
