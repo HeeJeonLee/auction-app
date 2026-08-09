@@ -9,6 +9,7 @@ from vision_extractor import (
     build_recapture_guidance,
     detect_missing_fields,
     process_images_to_dataframe,
+    _merge_extracted_rows,
 )
 
 
@@ -119,3 +120,42 @@ def test_process_images_to_dataframe_returns_quota_hold_rows_on_429(monkeypatch)
     assert len(df) == 1
     assert df.iloc[0]["사건번호"] == "AI쿼터대기"
     assert "보류" in str(df.iloc[0]["AI_심층분석"])
+
+
+def test_merge_extracted_rows_complements_fields_for_same_case():
+    default_columns = [
+        "원본파일명", "사건번호", "주소", "아파트명", "감정가", "낙찰예상가", "KB시세",
+        "부채총액", "주요채권자", "근저당여부", "압류여부", "AI_심층분석", "권리요약", "담당자메모", "심사상태",
+    ]
+
+    rows = [
+        {
+            "원본파일명": "case_main.png",
+            "사건번호": "2024타경2979",
+            "주소": "서울 강동구 천호동 52-17",
+            "아파트명": "태천해오름",
+            "감정가": "796000000",
+            "낙찰예상가": "509440000",
+            "AI_심층분석": "메인 요약",
+        },
+        {
+            "원본파일명": "kb_price.png",
+            "사건번호": "2024타경2979",
+            "KB시세": "816000000",
+            "부채총액": "202774869",
+            "주요채권자": "유더블유제십오차유동화전문유한회사",
+            "근저당여부": "예",
+            "압류여부": "예",
+            "AI_심층분석": "시세/채권 정보",
+        },
+    ]
+
+    merged = _merge_extracted_rows(rows, default_columns)
+
+    assert len(merged) == 1
+    merged_row = merged[0]
+    assert merged_row["사건번호"] == "2024타경2979"
+    assert str(merged_row["KB시세"]).strip() != ""
+    assert str(merged_row["주요채권자"]).strip() != ""
+    assert merged_row["근저당여부"] == "예"
+    assert merged_row["압류여부"] == "예"

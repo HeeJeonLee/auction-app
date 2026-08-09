@@ -246,6 +246,103 @@ def _to_rows(parsed_data: Any, image_name: str, default_columns: List[str]) -> l
     return rows
 
 
+def _norm_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _group_case_key(row: dict[str, Any]) -> str:
+    case_no = _norm_text(row.get("사건번호"))
+    if case_no and case_no not in {"판독불가", "정보없음", "AI쿼터대기", "미상"}:
+        return f"case:{case_no.replace(' ', '')}"
+
+    addr = _norm_text(row.get("주소"))
+    apt = _norm_text(row.get("아파트명"))
+    if addr or apt:
+        return f"addr:{addr}|apt:{apt}"
+
+    src = _norm_text(row.get("원본파일명"))
+    return f"file:{src}"
+
+
+def _is_informative_text(value: Any) -> bool:
+    text = _norm_text(value)
+    if not text:
+        return False
+    low = text.lower()
+    placeholders = ["미상", "판독불가", "정보없음", "n/a", "unknown", "없음"]
+    return all(token not in low for token in placeholders)
+
+
+def _merge_extracted_rows(rows: list[dict[str, Any]], default_columns: List[str]) -> list[dict[str, Any]]:
+    """여러 장 캡처에서 추출된 행을 사건 단위로 병합해 누락 필드를 보완한다."""
+    if not rows:
+        return []
+
+    numeric_fields = {"감정가", "최저매각가격", "낙찰예상가", "부채총액", "KB시세"}
+    yes_no_fields = {"청산가능여부", "근저당여부", "압류여부", "가압류여부", "가처분여부", "임차권등기여부", "전세권여부", "가등기여부"}
+
+    grouped: dict[str, dict[str, Any]] = {}
+    sources: dict[str, list[str]] = {}
+    analyses: dict[str, list[str]] = {}
+
+    for row in rows:
+        key = _group_case_key(row)
+        if key not in grouped:
+            grouped[key] = {col: "" for col in default_columns}
+            sources[key] = []
+            analyses[key] = []
+
+        merged = grouped[key]
+        src = _norm_text(row.get("원본파일명"))
+        if src and src not in sources[key]:
+            sources[key].append(src)
+
+        analysis_text = _norm_text(row.get("AI_심층분석"))
+        if analysis_text and analysis_text not in analyses[key]:
+            analyses[key].append(analysis_text)
+
+        for col in default_columns:
+            incoming = row.get(col, "")
+            existing = merged.get(col, "")
+
+            if col in numeric_fields:
+                incoming_num = _safe_float(incoming)
+                existing_num = _safe_float(existing)
+                if incoming_num > existing_num:
+                    merged[col] = incoming
+                continue
+
+            if col in yes_no_fields:
+                if _norm_text(incoming) == "예" or _norm_text(existing) == "예":
+                    merged[col] = "예"
+                elif not _norm_text(existing) and _norm_text(incoming):
+                    merged[col] = incoming
+                continue
+
+            incoming_info = _is_informative_text(incoming)
+            existing_info = _is_informative_text(existing)
+
+            if incoming_info and not existing_info:
+                merged[col] = incoming
+            elif incoming_info and existing_info and len(_norm_text(incoming)) > len(_norm_text(existing)):
+                merged[col] = incoming
+            elif not _norm_text(existing) and _norm_text(incoming):
+                merged[col] = incoming
+
+    merged_rows: list[dict[str, Any]] = []
+    for key, merged in grouped.items():
+        merged["원본파일명"] = ", ".join(sources.get(key, [])[:6])
+        merged["AI_심층분석"] = "\n\n".join(analyses.get(key, [])[:2])
+
+        auto_summary = build_structured_case_summary(merged)
+        merged["권리요약"] = auto_summary["자동정리요약"]
+        merged["담당자메모"] = build_case_briefing(merged)
+        merged["심사상태"] = auto_summary["정리상태"]
+        merged_rows.append(merged)
+
+    return merged_rows
+
+
 def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str]) -> pd.DataFrame:
     """
     최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
@@ -411,8 +508,9 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
             extracted_rows.extend(rows)
             print(f"[Vision AI]   - 이미지 완료: {img_file.name}, 생성 행 수={len(rows)}")
 
-        result_df = pd.DataFrame(extracted_rows)
-        print(f"[Vision AI] ✅ 최종 DataFrame 생성 완료: {len(result_df)}행 x {len(result_df.columns)}열")
+        merged_rows = _merge_extracted_rows(extracted_rows, default_columns)
+        result_df = pd.DataFrame(merged_rows)
+        print(f"[Vision AI] ✅ 최종 DataFrame 생성 완료: {len(result_df)}행 x {len(result_df.columns)}열 (원본행 {len(extracted_rows)}건 병합)")
         return result_df
         
     except Exception as e:
