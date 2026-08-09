@@ -28,7 +28,7 @@ from analysis import (
     get_creditor_advice, evaluate_case_policy, get_policy_reference,
     get_creditor_analysis_guidance
 )
-from manual_rule_engine import evaluate_manual_rules
+from manual_rule_engine import evaluate_manual_rules, get_rulepack_meta
 from vision_extractor import (
     process_images_to_dataframe,
     parse_captured_text_to_dataframe,
@@ -559,6 +559,15 @@ st.info(
     "📌 운영 규칙: 기준 미달 사건은 플랫폼이 데이터에서 삭제하고, 기준을 충족하는 사건만 보관합니다. "
     "취하 진행이 없거나 실무상 부적격으로 판정된 사건은 사용자가 삭제할 수 있습니다."
 )
+
+try:
+    rule_meta = get_rulepack_meta()
+    st.caption(
+        f"활성 규칙팩: {rule_meta.get('rule_version')} "
+        f"/ 규칙 수: {rule_meta.get('rule_count')}"
+    )
+except Exception:
+    st.caption("활성 규칙팩 정보를 불러오지 못했습니다.")
 
 st.markdown("### 🧭 실무 흐름 요약")
 flow_col1, flow_col2, flow_col3 = st.columns(3)

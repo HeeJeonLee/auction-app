@@ -23,7 +23,7 @@ def _safe_float(value: Any) -> float:
 
 
 @lru_cache(maxsize=8)
-def _load_rulepack_cached(path_str: str) -> dict[str, Any]:
+def _load_rulepack_cached(path_str: str, mtime: float) -> dict[str, Any]:
     path = Path(path_str)
     if not path.exists():
         return {
@@ -38,7 +38,17 @@ def _load_rulepack_cached(path_str: str) -> dict[str, Any]:
 
 def load_rulepack(path: Path | None = None) -> dict[str, Any]:
     rule_path = path or DEFAULT_RULEPACK
-    return _load_rulepack_cached(str(rule_path))
+    mtime = rule_path.stat().st_mtime if rule_path.exists() else 0.0
+    return _load_rulepack_cached(str(rule_path), mtime)
+
+
+def get_rulepack_meta(path: Path | None = None) -> dict[str, Any]:
+    rulepack = load_rulepack(path)
+    return {
+        "rule_version": str(rulepack.get("rule_version") or "MVP"),
+        "rule_count": len(list(rulepack.get("rules") or [])),
+        "path": str(path or DEFAULT_RULEPACK),
+    }
 
 
 def _pick_region_text(row: dict[str, Any]) -> str:
