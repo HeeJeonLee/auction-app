@@ -992,6 +992,7 @@ def _process_images_with_local_hybrid(
 
     elapsed_ms = (time.perf_counter() - run_started) * 1000.0
     image_count = max(1, len(image_files))
+    elapsed_seconds = max(0.001, elapsed_ms / 1000.0)
     result_df.attrs["ocr_stats"] = {
         "engine": "local_hybrid",
         "speed_profile": speed_profile,
@@ -999,6 +1000,7 @@ def _process_images_with_local_hybrid(
         "images": len(image_files),
         "elapsed_ms": elapsed_ms,
         "avg_ms_per_image": elapsed_ms / image_count,
+        "images_per_minute": (len(image_files) / elapsed_seconds) * 60.0,
         "tesseract_retry_limit": tesseract_retry_limit,
         "tesseract_retry_attempts": tesseract_retry_attempts,
         "tesseract_retry_used": tesseract_retry_used,

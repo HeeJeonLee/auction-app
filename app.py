@@ -615,6 +615,39 @@ def _safe_days_value(raw_value: object) -> int:
         return 9999
 
 
+def _to_number(value: object) -> float:
+    try:
+        return float(str(value or "").replace(",", "").strip())
+    except Exception:
+        return -1.0
+
+
+def _score_band_label(score_value: object) -> str:
+    score = _to_number(score_value)
+    if score < 0:
+        return "미생성"
+    if score >= 75:
+        return "상(75+)"
+    if score >= 55:
+        return "중(55-74)"
+    return "하(0-54)"
+
+
+def _creditor_type_label(creditor_name: object) -> str:
+    text = str(creditor_name or "").replace(" ", "")
+    if not text:
+        return "미상"
+    if any(k in text for k in ["은행", "농협", "수협", "중앙회"]):
+        return "1금융"
+    if any(k in text for k in ["저축", "캐피탈", "대부", "파이낸셜"]):
+        return "2/3금융"
+    if any(k in text for k in ["유동화", "NPL", "npl", "자산관리"]):
+        return "유동화/NPL"
+    if any(k in text for k in ["세무서", "구청", "시청", "건강보험"]):
+        return "공공"
+    return "일반"
+
+
 def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None:
     if frame.empty:
         return
@@ -630,6 +663,44 @@ def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None
     sorted_frame = frame.copy()
     sorted_frame["_rule_score_num"] = pd.to_numeric(sorted_frame.get("규칙점수", ""), errors="coerce").fillna(-1)
     sorted_frame["_days_left_num"] = sorted_frame.get("잔여일수", "").map(_safe_days_value)
+    sorted_frame["_verdict"] = sorted_frame.get("규칙판정", "").astype(str)
+    sorted_frame["_creditor_type"] = sorted_frame.get("주요채권자", "").map(_creditor_type_label)
+    sorted_frame["_score_band"] = sorted_frame.get("규칙점수", "").map(_score_band_label)
+
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    with filter_col1:
+        verdict_filter = st.selectbox(
+            "판정 필터",
+            options=["전체", "GO", "HOLD", "DROP"],
+            index=0,
+            key="rule_card_filter_verdict",
+        )
+    with filter_col2:
+        creditor_filter = st.selectbox(
+            "채권자 유형 필터",
+            options=["전체", "1금융", "2/3금융", "유동화/NPL", "공공", "일반", "미상"],
+            index=0,
+            key="rule_card_filter_creditor",
+        )
+    with filter_col3:
+        score_filter = st.selectbox(
+            "점수 구간 필터",
+            options=["전체", "상(75+)", "중(55-74)", "하(0-54)", "미생성"],
+            index=0,
+            key="rule_card_filter_score",
+        )
+
+    if verdict_filter != "전체":
+        sorted_frame = sorted_frame[sorted_frame["_verdict"] == verdict_filter]
+    if creditor_filter != "전체":
+        sorted_frame = sorted_frame[sorted_frame["_creditor_type"] == creditor_filter]
+    if score_filter != "전체":
+        sorted_frame = sorted_frame[sorted_frame["_score_band"] == score_filter]
+
+    if sorted_frame.empty:
+        st.info("선택한 필터에 해당하는 사건이 없습니다.")
+        return
+
     sorted_frame = sorted_frame.sort_values(by=["_rule_score_num", "_days_left_num"], ascending=[True, True])
     preview_rows = sorted_frame.head(max_cards)
 
@@ -640,17 +711,20 @@ def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None
         score = str(row.get("규칙점수") or "-")
         failed_ids: list[str] = []
         recommendations: list[str] = []
+        evidences: list[str] = []
         withdrawal_script = str(row.get("취하스크립트") or "")
 
         try:
             eval_result = evaluate_manual_rules(row_dict)
             failed_ids = eval_result.get("failed_rule_ids", [])[:6]
             recommendations = eval_result.get("recommendations", [])[:3]
+            evidences = eval_result.get("evidence", [])
             if not withdrawal_script.strip():
                 withdrawal_script = str(eval_result.get("withdrawal_script") or "")
         except Exception:
             failed_ids = []
             recommendations = []
+            evidences = []
 
         if not failed_ids:
             failed_ids = _split_pipe_values(row.get("규칙근거", ""), limit=4)
@@ -688,6 +762,16 @@ def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None
                     st.write(line)
                     if rec:
                         st.caption(f"권고: {rec}")
+
+                    evidence_line = ""
+                    for ev in evidences:
+                        ev_text = str(ev)
+                        if rid_text in ev_text:
+                            evidence_line = ev_text
+                            break
+                    if evidence_line:
+                        with st.expander(f"근거 상세 {rid_text}", expanded=False):
+                            st.code(evidence_line)
             else:
                 st.write("없음")
 
@@ -1150,12 +1234,14 @@ elif analyze_clicked and uploaded_files:
                                     "고속 처리 통계: "
                                     f"속도모드={ocr_stats.get('speed_profile', '-')}, "
                                     f"평균처리={ocr_stats.get('avg_ms_per_image', 0):.0f}ms/장, "
+                                    f"처리량={ocr_stats.get('images_per_minute', 0):.1f}장/분, "
                                     f"재시도율={ocr_stats.get('tesseract_retry_rate', 0.0):.1f}%, "
                                     f"재시도실사용율={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%"
                                 )
                                 st.session_state.processing_log.append(
                                     "✓ OCR 런타임 통계 "
                                     f"(avg_ms={ocr_stats.get('avg_ms_per_image', 0):.0f}, "
+                                    f"throughput={ocr_stats.get('images_per_minute', 0):.1f}/min, "
                                     f"retry_rate={ocr_stats.get('tesseract_retry_rate', 0.0):.1f}%, "
                                     f"used_rate={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%)"
                                 )
