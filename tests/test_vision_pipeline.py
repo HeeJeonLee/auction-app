@@ -350,3 +350,27 @@ def test_parse_captured_text_handles_korean_amount_units_and_date_formats():
     assert str(row["부채총액"]) == "227740000"
     assert str(row["KB시세"]) == "820000000"
     assert "우리은행" in str(row["주요채권자"])
+
+
+def test_parse_captured_text_extracts_court_and_spaced_claim_amount():
+    text = """
+    서울동부지방법원
+    사건번호 2024타경2979
+    임의경매 신청채권자 유더블유제십오차유동화전문유한회사
+    청구금액 202 774 869원
+    평균시세 8억 1,600만
+    """
+
+    default_columns = [
+        "원본파일명", "사건번호", "법원명", "부채총액", "KB시세", "주요채권자",
+        "권리요약", "담당자메모", "심사상태", "AI_심층분석"
+    ]
+
+    df = parse_captured_text_to_dataframe(text, default_columns)
+    row = df.iloc[0]
+
+    assert row["사건번호"] == "2024타경2979"
+    assert "지방법원" in str(row["법원명"])
+    assert str(row["부채총액"]) == "202774869"
+    assert str(row["KB시세"]) == "816000000"
+    assert "유더블유" in str(row["주요채권자"])

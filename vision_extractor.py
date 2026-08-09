@@ -533,7 +533,7 @@ def _extract_first(pattern: str, text: str, flags: int = 0) -> str:
 
 def _korean_amount_to_number(text: str) -> str:
     """한글 단위 금액(억/만)을 정수 문자열로 변환한다."""
-    src = _norm_text(text).replace(" ", "")
+    src = _norm_text(text).replace(" ", "").replace(".", "")
     if not src:
         return ""
 
@@ -566,7 +566,7 @@ def _korean_amount_to_number(text: str) -> str:
 
 def _extract_amount_by_labels(text: str, labels: list[str]) -> str:
     """라벨 기반으로 금액을 추출하고 숫자 문자열로 표준화한다."""
-    amount_token = r"([0-9][0-9,]*억\s*(?:[0-9][0-9,]*만)?\s*(?:원)?|[0-9][0-9,]*만\s*(?:원)?|[0-9][0-9,]*(?:원)?)"
+    amount_token = r"([0-9][0-9,\.\s]*억\s*(?:[0-9][0-9,\.\s]*만)?\s*(?:원)?|[0-9][0-9,\.\s]*만\s*(?:원)?|[0-9][0-9,\.\s]{4,}(?:원)?)"
 
     def pick_best(candidates: list[str]) -> str:
         best = ""
@@ -585,11 +585,22 @@ def _extract_amount_by_labels(text: str, labels: list[str]) -> str:
                 best = parsed
         return best
 
+    def fallback_digits_near_label(line: str, label: str) -> str:
+        if label not in line:
+            return ""
+        right = line.split(label, 1)[-1]
+        raw = _extract_first(r"([0-9][0-9,\.\s]{4,})", right)
+        digits = re.sub(r"[^0-9]", "", raw)
+        return digits if len(digits) >= 5 else ""
+
     for label in labels:
         line_candidates = []
         for line in text.splitlines():
             if label in line:
                 line_candidates.extend(re.findall(amount_token, line))
+                fallback = fallback_digits_near_label(line, label)
+                if fallback:
+                    line_candidates.append(fallback)
 
         picked_line = pick_best(line_candidates)
         if picked_line:
@@ -616,6 +627,26 @@ def _extract_case_number(text: str) -> str:
 def _extract_sale_date(text: str) -> str:
     date = _extract_first(r"(?:입찰|매각기일)\s*[:：]?\s*(\d{4}[\.\-/]\d{2}[\.\-/]\d{2})", text)
     return date.replace("-", ".").replace("/", ".") if date else ""
+
+
+def _extract_court_name(text: str) -> str:
+    court = _extract_first(r"((?:서울|부산|대구|인천|광주|대전|울산|수원|의정부|춘천|청주|전주|창원|제주)[^\n\r]{0,20}지방법원(?:[^\n\r]{0,8}지원)?)", text)
+    if court:
+        return re.sub(r"\s+", "", court)
+    return _extract_first(r"법원명\s*[:：]?\s*([^\n\r]+)", text)
+
+
+def _extract_creditor_name(text: str) -> str:
+    patterns = [
+        r"(?:채\s*권\s*자|권\s*리\s*자)\s*[:：]?\s*([^\n\r]+)",
+        r"임의경매\s*신청\s*채권자\s*[:：]?\s*([^\n\r]+)",
+        r"근저당권자\s*[:：]?\s*([^\n\r]+)",
+    ]
+    for p in patterns:
+        v = _extract_first(p, text)
+        if v:
+            return v.strip()
+    return ""
 
 
 def _get_paddle_ocr() -> Any:
@@ -857,7 +888,8 @@ def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) 
     min_price = _extract_amount_by_labels(text, ["최저가격", "최저매각가격", "최저매각가", "최저가"])
     claim = _extract_amount_by_labels(text, ["청구", "청구금액", "채권최고액", "채권액", "채권금액"])
     bid_date = _extract_sale_date(text)
-    creditor = _extract_first(r"(?:채\s*권\s*자|권\s*리\s*자)\s*[:：]?\s*([^\n\r]+)", text)
+    creditor = _extract_creditor_name(text)
+    court_name = _extract_court_name(text)
 
     addr = _extract_first(r"((?:서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주)[^\n\r]{6,80})", text)
     apt = _extract_first(r"\((?:[^\)]*?,)?\s*([^\)\n\r]*아파트)\)", text)
@@ -865,6 +897,8 @@ def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) 
     kb_general_manwon = _extract_first(r"일반평균\s*([0-9,]+)", text)
     if not kb_general_manwon:
         kb_general_manwon = _extract_first(r"KB시세\s*[:：]?\s*([0-9,]+억(?:[0-9,]+만)?|[0-9,]+만|[0-9,]+)", text)
+    if not kb_general_manwon:
+        kb_general_manwon = _extract_first(r"(?:일반평균|매매가|평균시세)\s*[:：]?\s*([0-9,\.\s]+억(?:[0-9,\.\s]+만)?|[0-9,\.\s]+만|[0-9,\.\s]{5,})", text)
     kb_price = ""
     if kb_general_manwon:
         parsed_kb = _korean_amount_to_number(kb_general_manwon)
@@ -881,6 +915,7 @@ def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) 
     row["낙찰예상가"] = min_price
     row["부채총액"] = claim
     row["매각기일"] = bid_date
+    row["법원명"] = court_name
     row["주소"] = addr
     row["아파트명"] = apt
     row["KB시세"] = kb_price
