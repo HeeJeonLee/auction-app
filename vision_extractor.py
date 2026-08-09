@@ -647,7 +647,23 @@ def _build_local_ocr_variants(image_bytes: bytes, mode: str) -> list[Image.Image
     bw_hard = sharp.point(lambda p: 255 if p > 135 else 0)
 
     if mode == "text_first":
-        return [sharp, bw_soft, bw_hard]
+        variants = [sharp, bw_soft, bw_hard]
+
+        # 긴 모바일 캡처는 세로 분할 변형을 추가해 작은 글자 판독률을 높인다.
+        w, h = sharp.size
+        if h >= 1500:
+            strip_h = 1300
+            overlap = 180
+            y = 0
+            while y < h:
+                y2 = min(h, y + strip_h)
+                variants.append(sharp.crop((0, y, w, y2)))
+                variants.append(bw_soft.crop((0, y, w, y2)))
+                if y2 >= h:
+                    break
+                y = y2 - overlap
+
+        return variants
     return [gray, sharp, bw_soft]
 
 
@@ -837,11 +853,11 @@ def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) 
         return pd.DataFrame([row])
 
     case_no = _extract_case_number(text)
-    appraisal = _extract_amount_by_labels(text, ["감정가격", "감정가"])
-    min_price = _extract_amount_by_labels(text, ["최저가격", "최저매각가격", "최저매각가"])
-    claim = _extract_amount_by_labels(text, ["청구", "청구금액", "채권최고액"])
+    appraisal = _extract_amount_by_labels(text, ["감정가격", "감정가", "감정평가액", "감정평가금액"])
+    min_price = _extract_amount_by_labels(text, ["최저가격", "최저매각가격", "최저매각가", "최저가"])
+    claim = _extract_amount_by_labels(text, ["청구", "청구금액", "채권최고액", "채권액", "채권금액"])
     bid_date = _extract_sale_date(text)
-    creditor = _extract_first(r"(?:채권자|권리자)\s*[:：]?\s*([^\n\r]+)", text)
+    creditor = _extract_first(r"(?:채\s*권\s*자|권\s*리\s*자)\s*[:：]?\s*([^\n\r]+)", text)
 
     addr = _extract_first(r"((?:서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주)[^\n\r]{6,80})", text)
     apt = _extract_first(r"\((?:[^\)]*?,)?\s*([^\)\n\r]*아파트)\)", text)

@@ -12,6 +12,7 @@ from vision_extractor import (
     parse_captured_text_to_dataframe,
     _merge_extracted_rows,
     _build_image_parts_for_mode,
+    _build_local_ocr_variants,
     _merge_engine_rows_with_priority,
     _needs_tesseract_retry,
     _normalize_extracted_row,
@@ -189,6 +190,15 @@ def test_build_image_parts_for_text_first_returns_segmented_parts():
     assert len(parts) >= 2
     image_dict_count = sum(1 for p in parts if isinstance(p, dict) and "data" in p)
     assert image_dict_count >= 2
+
+
+def test_build_local_ocr_variants_adds_strips_for_long_capture():
+    img = Image.new("RGB", (900, 2600), color=(255, 255, 255))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+
+    variants = _build_local_ocr_variants(buffer.getvalue(), "text_first")
+    assert len(variants) > 3
 
 
 def test_normalize_extracted_row_cleans_core_fields():
