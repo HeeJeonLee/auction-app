@@ -348,66 +348,76 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             result[col] = ""
             
     for idx, row in result.iterrows():
-        row_dict = row.to_dict()
-        score = calculate_candidate_score(row_dict)
-        grade = classify_grade(score)
-        
-        result.at[idx, "분석점수"] = score
-        result.at[idx, "분석등급"] = grade
-        
-        if not str(row.get("권리요약") or "").strip():
-            result.at[idx, "권리요약"] = build_rights_summary(row_dict)
-            
-        row_dict_updated = result.loc[idx].to_dict()
-        
-        # LTV 계산
-        debt = _safe_float(row_dict_updated.get("부채총액", 0))
-        value = _safe_float(row_dict_updated.get("KB시세") or row_dict_updated.get("감정가", 0))
-        ltv = (debt / value * 100) if value > 0 else 0
-        result.at[idx, "추정LTV"] = f"{ltv:.1f}%"
-        
-        # 제안 포인트 생성
-        if not str(row.get("제안포인트") or "").strip():
-            result.at[idx, "제안포인트"] = recommend_lender(row_dict_updated)
-
-        # 정책 기반 심사 및 데이터 보관 여부 판정
         try:
-            policy_eval = evaluate_case_policy(row_dict_updated)
-        except Exception:
-            policy_eval = {"decision": "reject", "keep_data": False, "reason": "정책평가 실패"}
+            row_dict = row.to_dict()
+            score = calculate_candidate_score(row_dict)
+            grade = classify_grade(score)
 
-        market_ok = passes_market_filters(row_dict_updated) if not policy_eval.get("keep_data") else True
+            result.at[idx, "분석점수"] = score
+            result.at[idx, "분석등급"] = grade
 
-        status_msg = "❌ 부적격 (Rejected)"
-        if policy_eval.get("keep_data") and market_ok:
-            status_msg = "✅ 적격 (Approved)"
-        elif not policy_eval.get("keep_data"):
-            status_msg = f"🗑️ 데이터보관제외 ({policy_eval.get('reason')})"
-        else:
-            status_msg = "⚠️ 부적격 (심사 기준 미달)"
+            if not str(row.get("권리요약") or "").strip():
+                result.at[idx, "권리요약"] = build_rights_summary(row_dict)
 
-        result.at[idx, "심사상태"] = status_msg
+            row_dict_updated = result.loc[idx].to_dict()
 
-        if policy_eval.get("keep_data") and not str(row.get("담당자메모") or "").strip():
-            creditor = str(row_dict_updated.get("주요채권자") or row_dict_updated.get("채권자") or "")
-            guidance = get_creditor_analysis_guidance(creditor) if creditor else ""
-            result.at[idx, "담당자메모"] = (
-                f"▶ 권리분석 기준: {policy_eval.get('reason')}\n"
-                f"▶ 채권자 분석: {guidance or '채권자별 패턴 누적 필요'}"
-            )
+            debt = _safe_float(row_dict_updated.get("부채총액", 0))
+            value = _safe_float(row_dict_updated.get("KB시세") or row_dict_updated.get("감정가", 0))
+            ltv = (debt / value * 100) if value > 0 else 0
+            result.at[idx, "추정LTV"] = f"{ltv:.1f}%"
 
-        # 등기부 열람 필요 여부
-        try:
-            if needs_registry_verification(row_dict_updated):
-                result.at[idx, "등기부열람여부"] = "열람필수"
-        except Exception: 
-            pass
+            if not str(row.get("제안포인트") or "").strip():
+                result.at[idx, "제안포인트"] = recommend_lender(row_dict_updated)
 
-        # 담당자 메모
-        if not str(row.get("담당자메모") or "").strip():
-            result.at[idx, "담당자메모"] = f"▶ 실무 메모: {build_owner_pitch(row_dict_updated)}"
+            try:
+                policy_eval = evaluate_case_policy(row_dict_updated)
+            except Exception:
+                policy_eval = {"decision": "reject", "keep_data": False, "reason": "정책평가 실패"}
+
+            try:
+                market_ok = passes_market_filters(row_dict_updated) if not policy_eval.get("keep_data") else True
+            except Exception:
+                market_ok = False
+
+            status_msg = "❌ 부적격 (Rejected)"
+            if policy_eval.get("keep_data") and market_ok:
+                status_msg = "✅ 적격 (Approved)"
+            elif not policy_eval.get("keep_data"):
+                status_msg = f"🗑️ 데이터보관제외 ({policy_eval.get('reason')})"
+            else:
+                status_msg = "⚠️ 부적격 (심사 기준 미달)"
+
+            result.at[idx, "심사상태"] = status_msg
+
+            if policy_eval.get("keep_data") and not str(row.get("담당자메모") or "").strip():
+                creditor = str(row_dict_updated.get("주요채권자") or row_dict_updated.get("채권자") or "")
+                guidance = get_creditor_analysis_guidance(creditor) if creditor else ""
+                result.at[idx, "담당자메모"] = (
+                    f"▶ 권리분석 기준: {policy_eval.get('reason')}\n"
+                    f"▶ 채권자 분석: {guidance or '채권자별 패턴 누적 필요'}"
+                )
+
+            try:
+                if needs_registry_verification(row_dict_updated):
+                    result.at[idx, "등기부열람여부"] = "열람필수"
+            except Exception:
+                pass
+
+            if not str(row.get("담당자메모") or "").strip():
+                result.at[idx, "담당자메모"] = f"▶ 실무 메모: {build_owner_pitch(row_dict_updated)}"
+
+        except Exception as row_error:
+            result.at[idx, "심사상태"] = f"⚠️ 보완필요 (행 처리 오류: {type(row_error).__name__})"
+            if not str(result.at[idx, "담당자메모"] or "").strip():
+                result.at[idx, "담당자메모"] = "▶ 행 처리 중 오류가 발생해 보수적으로 보완필요로 분류되었습니다."
 
     return result
+
+
+def status_mask(frame: pd.DataFrame, keyword: str = "적격") -> pd.Series:
+    if "심사상태" not in frame.columns:
+        return pd.Series([False] * len(frame), index=frame.index)
+    return frame["심사상태"].astype(str).str.contains(keyword, na=False)
 
 # =========================================================================
 # SECTION 1: 업로드 및 AI 파싱
@@ -660,7 +670,7 @@ elif analyze_clicked and uploaded_files:
             status_text.markdown("#### 4/4 적격 자산 이미지 보관...")
             progress_bar.progress(90)
 
-            approved_df = enriched_df[enriched_df["심사상태"].str.contains("적격", na=False)]
+            approved_df = enriched_df[status_mask(enriched_df)]
             approved_filenames = approved_df["원본파일명"].astype(str).tolist()
 
             temp_approved_images = [img for img in image_files if img.name in approved_filenames]
@@ -714,8 +724,9 @@ st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>📈 권리분석 및 사건 판단 대시보드</div>", unsafe_allow_html=True)
 
 if not df.empty:
-    approved = df[df["심사상태"].str.contains("적격", na=False)]
-    rejected = df[~df["심사상태"].str.contains("적격", na=False)]
+    mask_approved = status_mask(df)
+    approved = df[mask_approved]
+    rejected = df[~mask_approved]
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -747,7 +758,11 @@ if not df.empty:
         """, unsafe_allow_html=True)
     
     with col4:
-        avg_ltv = df["추정LTV"].str.replace("%","").astype(float).mean() if not df.empty else 0
+        if not df.empty:
+            ltv_series = pd.to_numeric(df["추정LTV"].astype(str).str.replace("%", "", regex=False), errors="coerce")
+            avg_ltv = float(ltv_series.fillna(0).mean())
+        else:
+            avg_ltv = 0
         ltv_color = "#22c55e" if avg_ltv < 75 else "#f59e0b" if avg_ltv < 85 else "#ef4444"
         st.markdown(f"""
         <div class='metric-box'>
@@ -897,8 +912,9 @@ st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>📦 전체 데이터보관 및 캡처 관리</div>", unsafe_allow_html=True)
 
 if not df.empty:
-    approved_df = df[df["심사상태"].str.contains("적격", na=False)]
-    rejected_df = df[~df["심사상태"].str.contains("적격", na=False)]
+    mask_approved = status_mask(df)
+    approved_df = df[mask_approved]
+    rejected_df = df[~mask_approved]
     
     tab1, tab2 = st.tabs(["🟢 적격 데이터", "🔴 부적격 데이터"])
     
@@ -946,7 +962,7 @@ st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>📄 보고서 및 대응 브리핑 출력</div>", unsafe_allow_html=True)
 
 if not df.empty:
-    approved_df = df[df["심사상태"].str.contains("적격", na=False)]
+    approved_df = df[status_mask(df)]
     if not approved_df.empty:
         st.markdown("#### 💼 의사결정용 전문 리포트 생성")
         st.caption("적격으로 분류된 물건만 보고서로 출력되며, 자동 정리 요약과 보완 필요 필드도 함께 포함됩니다.")
