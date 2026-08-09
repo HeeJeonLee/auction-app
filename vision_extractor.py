@@ -11,6 +11,21 @@ from PIL import Image
 from PIL import ImageFilter
 from PIL import ImageOps
 
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - optional dependency
+    np = None
+
+try:
+    import pytesseract
+except Exception:  # pragma: no cover - optional dependency
+    pytesseract = None
+
+try:
+    from paddleocr import PaddleOCR
+except Exception:  # pragma: no cover - optional dependency
+    PaddleOCR = None
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", FutureWarning)
     try:
@@ -21,14 +36,36 @@ with warnings.catch_warnings():
 from analysis import _safe_float, get_creditor_analysis_guidance, structure_rights_analysis
 
 
+_PADDLE_OCR_INSTANCE = None
+
+
+def _decide_quality_profile(width: int, height: int, edge_score: float, contrast: float) -> str:
+    aspect = (height / width) if width else 1.0
+    if aspect >= 1.9:
+        return "mobile_long"
+    if edge_score >= 0.08 and contrast >= 0.18:
+        return "table_dense"
+    return "mixed_ui"
+
+
+def _recommended_quality_threshold(profile: str) -> int:
+    if profile == "table_dense":
+        return 68
+    if profile == "mobile_long":
+        return 60
+    return 64
+
+
 def assess_image_quality(image_bytes: bytes) -> dict[str, Any]:
-    """간단한 이미지 품질 지표를 계산해 재촬영 여부를 판단한다."""
+    """이미지 품질 지표를 계산하고 문서 유형별 임계값으로 재촬영 필요 여부를 판단한다."""
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("L")
         gray = img.resize((200, 200))
         pixels = list(gray.get_flattened_data())
-        mean_brightness = sum(pixels) / len(pixels) / 255.0
-        variance = sum((p - mean_brightness) ** 2 for p in pixels) / len(pixels)
+        mean_pixel = sum(pixels) / max(1, len(pixels))
+        mean_brightness = mean_pixel / 255.0
+        variance = sum((p - mean_pixel) ** 2 for p in pixels) / max(1, len(pixels))
+        contrast = (variance ** 0.5) / 255.0
         edge_score = 0.0
         for i in range(1, gray.width - 1):
             for j in range(1, gray.height - 1):
@@ -36,32 +73,71 @@ def assess_image_quality(image_bytes: bytes) -> dict[str, Any]:
                 edge_score += diff
         edge_score /= (gray.width * gray.height * 255 * 2)
 
-        score = 70
-        if mean_brightness < 0.3:
-            score -= 20
-        elif mean_brightness > 0.85:
-            score -= 10
-        if variance < 0.02:
-            score -= 15
-        if edge_score < 0.05:
-            score -= 10
+        profile = _decide_quality_profile(img.width, img.height, edge_score, contrast)
+        recommended_min_score = _recommended_quality_threshold(profile)
+
+        score = 82
+        if mean_brightness < 0.22:
+            score -= 26
+        elif mean_brightness < 0.32:
+            score -= 14
+        elif mean_brightness > 0.90:
+            score -= 12
+
+        if contrast < 0.10:
+            score -= 22
+        elif contrast < 0.15:
+            score -= 12
+
+        if edge_score < 0.03:
+            score -= 22
+        elif edge_score < 0.05:
+            score -= 12
 
         score = max(0, min(100, score))
         return {
             "score": int(score),
             "brightness": round(mean_brightness, 3),
             "variance": round(variance, 3),
+            "contrast": round(contrast, 3),
             "edge_score": round(edge_score, 3),
-            "needs_recapture": score < 65,
+            "profile": profile,
+            "recommended_min_score": recommended_min_score,
+            "needs_recapture": score < recommended_min_score,
         }
     except Exception:
-        return {"score": 50, "brightness": 0.5, "variance": 0.0, "edge_score": 0.0, "needs_recapture": True}
+        return {
+            "score": 50,
+            "brightness": 0.5,
+            "variance": 0.0,
+            "contrast": 0.0,
+            "edge_score": 0.0,
+            "profile": "mixed_ui",
+            "recommended_min_score": 64,
+            "needs_recapture": True,
+        }
 
 
 def build_recapture_guidance(quality: dict[str, Any]) -> str:
+    profile = str(quality.get("profile") or "mixed_ui")
+    threshold = int(quality.get("recommended_min_score") or 64)
+
     if quality.get("needs_recapture"):
-        return "캡처 보정 권장: 문서가 너무 어둡거나 흐릿하거나 잘려 보이면, 화면을 더 선명하게 보이도록 캡처를 다시 업로드해 주세요."
-    return "품질 양호: OCR 및 자동 정리 단계로 바로 진행해도 좋습니다."
+        if profile == "mobile_long":
+            return (
+                f"캡처 보정 권장(긴 모바일 캡처 기준 {threshold}점): "
+                "스크롤 캡처는 글자 높이를 키우고, 화면 확대(125~150%) 후 다시 캡처하면 인식률이 개선됩니다."
+            )
+        if profile == "table_dense":
+            return (
+                f"캡처 보정 권장(표 밀집 문서 기준 {threshold}점): "
+                "표 선과 숫자가 뭉개지지 않도록 원본 해상도로 저장하고, 밝기를 조금 올려 재업로드해 주세요."
+            )
+        return (
+            f"캡처 보정 권장(기준 {threshold}점): "
+            "문서가 너무 어둡거나 흐릿하거나 잘려 보이면 화면을 선명하게 한 뒤 다시 업로드해 주세요."
+        )
+    return f"품질 양호(기준 {threshold}점 이상): OCR 및 자동 정리 단계로 바로 진행해도 좋습니다."
 
 
 def detect_missing_fields(row: dict[str, Any]) -> list[str]:
@@ -455,6 +531,300 @@ def _extract_first(pattern: str, text: str, flags: int = 0) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _korean_amount_to_number(text: str) -> str:
+    """한글 단위 금액(억/만)을 정수 문자열로 변환한다."""
+    src = _norm_text(text).replace(" ", "")
+    if not src:
+        return ""
+
+    # 숫자만 있는 경우
+    only_num = re.fullmatch(r"[0-9,]+", src)
+    if only_num:
+        return src.replace(",", "")
+
+    # 예: 8억1,600만 / 2억 / 9500만
+    total = 0
+    eok_match = re.search(r"([0-9][0-9,]*)억", src)
+    man_match = re.search(r"([0-9][0-9,]*)만", src)
+    chun_match = re.search(r"([0-9][0-9,]*)천", src)
+
+    if eok_match:
+        total += int(eok_match.group(1).replace(",", "")) * 100_000_000
+    if man_match:
+        total += int(man_match.group(1).replace(",", "")) * 10_000
+
+    # 희소 케이스: 5천만원/7천만
+    if chun_match and "만" in src and not man_match:
+        total += int(chun_match.group(1).replace(",", "")) * 10_000_000
+
+    if total > 0:
+        return str(total)
+
+    numeric = re.search(r"([0-9][0-9,]{2,})", src)
+    return numeric.group(1).replace(",", "") if numeric else ""
+
+
+def _extract_amount_by_labels(text: str, labels: list[str]) -> str:
+    """라벨 기반으로 금액을 추출하고 숫자 문자열로 표준화한다."""
+    amount_token = r"([0-9][0-9,]*억\s*(?:[0-9][0-9,]*만)?\s*(?:원)?|[0-9][0-9,]*만\s*(?:원)?|[0-9][0-9,]*(?:원)?)"
+
+    def pick_best(candidates: list[str]) -> str:
+        best = ""
+        best_num = 0
+        for cand in candidates:
+            c = str(cand or "").strip()
+            if not c:
+                continue
+            # 비율(64%) 같은 후보 제거
+            if "%" in c:
+                continue
+            parsed = _korean_amount_to_number(c.replace("원", ""))
+            value = int(parsed) if parsed.isdigit() else 0
+            if value > best_num:
+                best_num = value
+                best = parsed
+        return best
+
+    for label in labels:
+        line_candidates = []
+        for line in text.splitlines():
+            if label in line:
+                line_candidates.extend(re.findall(amount_token, line))
+
+        picked_line = pick_best(line_candidates)
+        if picked_line:
+            return picked_line
+
+        # 줄바꿈/공백 변형 대비 백업 검색
+        nearby_pattern = rf"{label}[^\n\r]{{0,120}}"
+        for segment in re.findall(nearby_pattern, text):
+            segment_candidates = re.findall(amount_token, segment)
+            picked_seg = pick_best(segment_candidates)
+            if picked_seg:
+                return picked_seg
+
+    return ""
+
+
+def _extract_case_number(text: str) -> str:
+    raw = _extract_first(r"(\d{4}\s*타\s*경\s*\d{2,10})", text)
+    if not raw:
+        raw = _extract_first(r"사건번호\s*[:：]?\s*(\d{4}\s*타\s*경\s*\d{2,10})", text)
+    return _normalize_case_number(raw)
+
+
+def _extract_sale_date(text: str) -> str:
+    date = _extract_first(r"(?:입찰|매각기일)\s*[:：]?\s*(\d{4}[\.\-/]\d{2}[\.\-/]\d{2})", text)
+    return date.replace("-", ".").replace("/", ".") if date else ""
+
+
+def _get_paddle_ocr() -> Any:
+    global _PADDLE_OCR_INSTANCE
+    if _PADDLE_OCR_INSTANCE is not None:
+        return _PADDLE_OCR_INSTANCE
+    if PaddleOCR is None:
+        return None
+    try:
+        _PADDLE_OCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang="korean", show_log=False)
+    except Exception:
+        _PADDLE_OCR_INSTANCE = None
+    return _PADDLE_OCR_INSTANCE
+
+
+def _build_local_ocr_variants(image_bytes: bytes, mode: str) -> list[Image.Image]:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+    w, h = img.size
+    min_side = min(w, h)
+    if min_side < 1200:
+        scale = 1200.0 / max(1, min_side)
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+    gray = ImageOps.grayscale(img)
+    gray = ImageOps.autocontrast(gray)
+    sharp = gray.filter(ImageFilter.SHARPEN)
+    bw_soft = sharp.point(lambda p: 255 if p > 150 else 0)
+    bw_hard = sharp.point(lambda p: 255 if p > 135 else 0)
+
+    if mode == "text_first":
+        return [sharp, bw_soft, bw_hard]
+    return [gray, sharp, bw_soft]
+
+
+def _run_paddle_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]:
+    ocr = _get_paddle_ocr()
+    if ocr is None or np is None:
+        return {"text": "", "confidence": 0.0, "available": False}
+
+    best_text = ""
+    best_conf = 0.0
+
+    for img in image_variants:
+        arr = np.array(img.convert("RGB"))
+        lines = []
+        confs = []
+        try:
+            raw = ocr.ocr(arr, cls=True)
+        except Exception:
+            continue
+
+        blocks = raw[0] if raw and isinstance(raw, list) else []
+        for item in blocks or []:
+            if not item or len(item) < 2:
+                continue
+            text_info = item[1]
+            if not text_info or len(text_info) < 2:
+                continue
+            line_text = str(text_info[0] or "").strip()
+            try:
+                line_conf = float(text_info[1])
+            except Exception:
+                line_conf = 0.0
+            if line_text:
+                lines.append(line_text)
+                confs.append(line_conf)
+
+        joined = "\n".join(lines).strip()
+        avg_conf = (sum(confs) / len(confs)) if confs else 0.0
+        if avg_conf > best_conf or (avg_conf == best_conf and len(joined) > len(best_text)):
+            best_text = joined
+            best_conf = avg_conf
+
+    return {"text": best_text, "confidence": best_conf, "available": True}
+
+
+def _run_tesseract_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]:
+    if pytesseract is None:
+        return {"text": "", "confidence": 0.0, "available": False}
+
+    best_text = ""
+    best_conf = 0.0
+    tess_config = "--oem 3 --psm 6"
+
+    for img in image_variants:
+        try:
+            text = pytesseract.image_to_string(img, lang="kor+eng", config=tess_config)
+        except Exception:
+            continue
+
+        try:
+            data = pytesseract.image_to_data(
+                img,
+                lang="kor+eng",
+                config=tess_config,
+                output_type=pytesseract.Output.DICT,
+            )
+            conf_values = [float(v) for v in data.get("conf", []) if str(v).strip() not in {"", "-1"}]
+            avg_conf = (sum(conf_values) / len(conf_values) / 100.0) if conf_values else 0.0
+        except Exception:
+            avg_conf = 0.0
+
+        text = str(text or "").strip()
+        if avg_conf > best_conf or (avg_conf == best_conf and len(text) > len(best_text)):
+            best_text = text
+            best_conf = avg_conf
+
+    return {"text": best_text, "confidence": best_conf, "available": True}
+
+
+def _core_field_score(row: dict[str, Any]) -> int:
+    keys = ["사건번호", "감정가", "최저매각가격", "부채총액", "주소", "주요채권자"]
+    return sum(1 for k in keys if _is_informative_text(row.get(k)))
+
+
+def _needs_tesseract_retry(paddle_row: dict[str, Any], paddle_conf: float) -> bool:
+    if paddle_conf < 0.72:
+        return True
+    if _core_field_score(paddle_row) < 4:
+        return True
+    return False
+
+
+def _merge_engine_rows_with_priority(paddle_row: dict[str, Any], tesseract_row: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(paddle_row)
+
+    text_priority_fields = ["사건번호", "법원명", "주소", "아파트명", "주요채권자", "권리요약", "AI_심층분석"]
+    numeric_priority_fields = ["감정가", "최저매각가격", "낙찰예상가", "부채총액", "KB시세", "매각기일", "물건번호"]
+    yes_no_fields = ["근저당여부", "압류여부", "가압류여부", "가처분여부", "임차권등기여부", "전세권여부", "가등기여부"]
+
+    for field in text_priority_fields:
+        p = merged.get(field, "")
+        t = tesseract_row.get(field, "")
+        if not _is_informative_text(p) and _is_informative_text(t):
+            merged[field] = t
+
+    for field in numeric_priority_fields:
+        p = merged.get(field, "")
+        t = tesseract_row.get(field, "")
+        p_num = _safe_float(p)
+        t_num = _safe_float(t)
+        if t_num > p_num:
+            merged[field] = t
+        elif not _is_informative_text(p) and _is_informative_text(t):
+            merged[field] = t
+
+    for field in yes_no_fields:
+        p = _norm_text(merged.get(field))
+        t = _norm_text(tesseract_row.get(field))
+        if p != "예" and t == "예":
+            merged[field] = "예"
+        elif not p and t:
+            merged[field] = t
+
+    return _normalize_extracted_row(merged)
+
+
+def _parse_text_to_row(raw_text: str, default_columns: List[str], image_name: str) -> dict[str, Any]:
+    df = parse_captured_text_to_dataframe(raw_text, default_columns)
+    row = df.iloc[0].to_dict() if not df.empty else {col: "" for col in default_columns}
+    row["원본파일명"] = image_name
+    return _normalize_extracted_row(row)
+
+
+def _process_images_with_local_hybrid(image_files: List[Any], default_columns: List[str], mode: str = "balanced") -> pd.DataFrame:
+    paddle_ok = _get_paddle_ocr() is not None and np is not None
+    tesseract_ok = pytesseract is not None
+    if not paddle_ok and not tesseract_ok:
+        raise RuntimeError(
+            "❌ 로컬 OCR 엔진을 찾지 못했습니다. 'paddleocr', 'pytesseract', 'opencv-python-headless' 설치 후 다시 실행해 주세요."
+        )
+
+    rows: list[dict[str, Any]] = []
+
+    for img_file in image_files:
+        image_bytes = img_file.getvalue()
+        variants = _build_local_ocr_variants(image_bytes, mode)
+
+        paddle_res = _run_paddle_ocr_text(variants) if paddle_ok else {"text": "", "confidence": 0.0}
+        paddle_row = _parse_text_to_row(paddle_res.get("text", ""), default_columns, img_file.name)
+
+        final_row = paddle_row
+        tesseract_used = False
+
+        if tesseract_ok and _needs_tesseract_retry(paddle_row, float(paddle_res.get("confidence", 0.0))):
+            tesseract_res = _run_tesseract_ocr_text(variants)
+            tess_row = _parse_text_to_row(tesseract_res.get("text", ""), default_columns, img_file.name)
+
+            merged_row = _merge_engine_rows_with_priority(paddle_row, tess_row)
+            if _core_field_score(merged_row) >= _core_field_score(paddle_row):
+                final_row = merged_row
+                tesseract_used = True
+
+        auto_summary = build_structured_case_summary(final_row)
+        final_row["권리요약"] = auto_summary["자동정리요약"]
+        final_row["담당자메모"] = build_case_briefing(final_row)
+        final_row["심사상태"] = auto_summary["정리상태"]
+        final_row["AI_심층분석"] = (
+            ("[로컬 OCR] PaddleOCR 1차 추출" if paddle_ok else "[로컬 OCR] Tesseract 단독 추출")
+            + (" + Tesseract 저신뢰 재시도/필드보완" if paddle_ok and tesseract_used else "")
+            + " 결과입니다."
+        )
+        rows.append(final_row)
+
+    merged_rows = _merge_extracted_rows(rows, default_columns)
+    return pd.DataFrame(merged_rows)
+
+
 def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) -> pd.DataFrame:
     """Gemini 없이 캡처에서 복사한 텍스트를 직접 구조화한다.
 
@@ -466,29 +836,34 @@ def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) 
     if not text:
         return pd.DataFrame([row])
 
-    case_no = _extract_first(r"(\d{4}\s*타경\s*\d{2,10})", text)
-    appraisal = _extract_first(r"감정가격\s*([0-9,]+)", text)
-    min_price = _extract_first(r"최저가격\s*(?:\(\d+%\)\s*)?([0-9,]+)", text)
-    claim = _extract_first(r"청구[:\s]*([0-9,]+)", text)
-    bid_date = _extract_first(r"입찰\s*(\d{4}\.\d{2}\.\d{2})", text)
-    creditor = _extract_first(r"채권자\s*([^\n\r]+)", text)
+    case_no = _extract_case_number(text)
+    appraisal = _extract_amount_by_labels(text, ["감정가격", "감정가"])
+    min_price = _extract_amount_by_labels(text, ["최저가격", "최저매각가격", "최저매각가"])
+    claim = _extract_amount_by_labels(text, ["청구", "청구금액", "채권최고액"])
+    bid_date = _extract_sale_date(text)
+    creditor = _extract_first(r"(?:채권자|권리자)\s*[:：]?\s*([^\n\r]+)", text)
 
     addr = _extract_first(r"((?:서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주)[^\n\r]{6,80})", text)
     apt = _extract_first(r"\((?:[^\)]*?,)?\s*([^\)\n\r]*아파트)\)", text)
 
     kb_general_manwon = _extract_first(r"일반평균\s*([0-9,]+)", text)
+    if not kb_general_manwon:
+        kb_general_manwon = _extract_first(r"KB시세\s*[:：]?\s*([0-9,]+억(?:[0-9,]+만)?|[0-9,]+만|[0-9,]+)", text)
     kb_price = ""
     if kb_general_manwon:
-        try:
-            kb_price = str(int(kb_general_manwon.replace(",", "")) * 10_000)
-        except Exception:
-            kb_price = kb_general_manwon
+        parsed_kb = _korean_amount_to_number(kb_general_manwon)
+        if parsed_kb:
+            # 일반평균은 만원 단위가 자주 들어오므로 숫자가 짧으면 만원으로 간주
+            if parsed_kb.isdigit() and len(parsed_kb) <= 7 and "억" not in kb_general_manwon and "만" not in kb_general_manwon:
+                kb_price = str(int(parsed_kb) * 10_000)
+            else:
+                kb_price = parsed_kb
 
     row["사건번호"] = case_no
-    row["감정가"] = appraisal.replace(",", "") if appraisal else ""
-    row["최저매각가격"] = min_price.replace(",", "") if min_price else ""
-    row["낙찰예상가"] = min_price.replace(",", "") if min_price else ""
-    row["부채총액"] = claim.replace(",", "") if claim else ""
+    row["감정가"] = appraisal
+    row["최저매각가격"] = min_price
+    row["낙찰예상가"] = min_price
+    row["부채총액"] = claim
     row["매각기일"] = bid_date
     row["주소"] = addr
     row["아파트명"] = apt
@@ -617,7 +992,7 @@ def _merge_extracted_rows(rows: list[dict[str, Any]], default_columns: List[str]
     return merged_rows
 
 
-def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str], mode: str = "balanced") -> pd.DataFrame:
+def _process_images_with_gemini(api_key: str, image_files: List[Any], default_columns: List[str], mode: str = "balanced") -> pd.DataFrame:
     """
     최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
     개선사항:
@@ -815,3 +1190,33 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
             "3. 이미지 파일이 손상됨\n"
             "4. API 할당량 초과"
         )
+
+
+def process_images_to_dataframe(
+    api_key: str,
+    image_files: List[Any],
+    default_columns: List[str],
+    mode: str = "balanced",
+    engine: str = "auto",
+) -> pd.DataFrame:
+    """이미지 OCR 파이프라인 진입점.
+
+    engine:
+    - auto: API 키와 Gemini 패키지가 있으면 Gemini, 없으면 로컬 하이브리드
+    - gemini: Gemini 강제
+    - local_hybrid: PaddleOCR + Tesseract 강제
+    """
+    normalized_engine = str(engine or "auto").strip().lower()
+    if normalized_engine not in {"auto", "gemini", "local_hybrid"}:
+        normalized_engine = "auto"
+
+    if normalized_engine == "local_hybrid":
+        return _process_images_with_local_hybrid(image_files, default_columns, mode=mode)
+
+    if normalized_engine == "gemini":
+        return _process_images_with_gemini(api_key, image_files, default_columns, mode=mode)
+
+    can_use_gemini = bool(str(api_key or "").strip()) and genai is not None
+    if can_use_gemini:
+        return _process_images_with_gemini(api_key, image_files, default_columns, mode=mode)
+    return _process_images_with_local_hybrid(image_files, default_columns, mode=mode)

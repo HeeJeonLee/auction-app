@@ -12,6 +12,8 @@ from vision_extractor import (
     parse_captured_text_to_dataframe,
     _merge_extracted_rows,
     _build_image_parts_for_mode,
+    _merge_engine_rows_with_priority,
+    _needs_tesseract_retry,
     _normalize_extracted_row,
     _to_rows,
 )
@@ -64,6 +66,8 @@ def test_assess_image_quality_and_guidance():
     guidance = build_recapture_guidance(quality)
 
     assert quality["score"] >= 0
+    assert "profile" in quality
+    assert "recommended_min_score" in quality
     assert isinstance(guidance, str)
     assert len(guidance) > 0
 
@@ -87,6 +91,17 @@ def test_assess_image_quality_does_not_emit_deprecation_warning():
         assess_image_quality(buffer.getvalue())
 
     assert not any("getdata" in str(w.message) for w in caught)
+
+
+def test_assess_image_quality_identifies_mobile_long_profile():
+    img = Image.new("RGB", (800, 2200), color=(245, 245, 245))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    quality = assess_image_quality(buffer.getvalue())
+    assert quality["profile"] == "mobile_long"
+    assert quality["recommended_min_score"] == 60
 
 
 class _DummyUpload:
@@ -248,3 +263,80 @@ def test_parse_captured_text_to_dataframe_extracts_core_fields():
     assert "유더블유" in str(row["주요채권자"])
     assert row["근저당여부"] == "예"
     assert row["압류여부"] == "예"
+
+
+def test_needs_tesseract_retry_when_confidence_or_fields_are_low():
+    low_conf_row = {
+        "사건번호": "2024타경2979",
+        "감정가": "",
+        "최저매각가격": "",
+        "부채총액": "",
+        "주소": "",
+        "주요채권자": "",
+    }
+    assert _needs_tesseract_retry(low_conf_row, 0.60) is True
+    assert _needs_tesseract_retry(low_conf_row, 0.90) is True
+
+    enough_fields_row = {
+        "사건번호": "2024타경2979",
+        "감정가": "796000000",
+        "최저매각가격": "509440000",
+        "부채총액": "202774869",
+        "주소": "서울 강동구 천호동 52-17",
+        "주요채권자": "유더블유제십오차유동화전문유한회사",
+    }
+    assert _needs_tesseract_retry(enough_fields_row, 0.85) is False
+
+
+def test_merge_engine_rows_with_priority_prefers_numeric_and_yes_fields():
+    paddle_row = {
+        "사건번호": "2024타경2979",
+        "주소": "서울 강동구 천호동",
+        "아파트명": "태천해오름아파트",
+        "감정가": "796000000",
+        "최저매각가격": "",
+        "부채총액": "100000000",
+        "주요채권자": "",
+        "근저당여부": "아니오",
+    }
+    tesseract_row = {
+        "사건번호": "2024타경2979",
+        "최저매각가격": "509440000",
+        "부채총액": "202774869",
+        "주요채권자": "유더블유제십오차유동화전문유한회사",
+        "근저당여부": "예",
+    }
+
+    merged = _merge_engine_rows_with_priority(paddle_row, tesseract_row)
+    assert merged["최저매각가격"] == "509440000"
+    assert merged["부채총액"] == "202774869"
+    assert "유더블유" in merged["주요채권자"]
+    assert merged["근저당여부"] == "예"
+
+
+def test_parse_captured_text_handles_korean_amount_units_and_date_formats():
+    text = """
+    사건번호: 2024 타 경 2979
+    매각기일 2026-09-15
+    감정가 8억1,600만 원
+    최저매각가격 (64%) 5억940만 원
+    채권최고액 2억 2774만 원
+    채권자 우리은행
+    KB시세: 8억2,000만
+    """
+
+    default_columns = [
+        "원본파일명", "사건번호", "매각기일", "감정가", "최저매각가격", "낙찰예상가",
+        "부채총액", "KB시세", "주요채권자", "권리요약", "담당자메모", "심사상태", "AI_심층분석"
+    ]
+
+    df = parse_captured_text_to_dataframe(text, default_columns)
+    row = df.iloc[0]
+
+    assert row["사건번호"] == "2024타경2979"
+    assert row["매각기일"] == "2026.09.15"
+    assert str(row["감정가"]) == "816000000"
+    assert str(row["최저매각가격"]) == "509400000"
+    assert str(row["부채총액"]) == "227740000"
+    assert str(row["KB시세"]) == "820000000"
+    assert "우리은행" in str(row["주요채권자"])

@@ -502,6 +502,19 @@ ocr_mode_label = st.selectbox(
 )
 ocr_mode = "text_first" if "텍스트 우선" in ocr_mode_label else "balanced"
 
+ocr_engine_label = st.selectbox(
+    "🧩 OCR 엔진",
+    options=["자동(키 있으면 Gemini, 없으면 로컬 무료)", "Gemini Vision", "로컬 무료(PaddleOCR + Tesseract)"],
+    index=0,
+    help="로컬 무료 모드는 API 키 없이 동작하며, PaddleOCR 1차 + 저신뢰 구간 Tesseract 재시도로 보완합니다."
+)
+if "Gemini Vision" in ocr_engine_label:
+    ocr_engine = "gemini"
+elif "로컬 무료" in ocr_engine_label:
+    ocr_engine = "local_hybrid"
+else:
+    ocr_engine = "auto"
+
 with st.expander("🛟 429 우회: 캡처 텍스트 직접 붙여넣기", expanded=False):
     pasted_text = st.text_area(
         "탱크옥션/KB 화면에서 텍스트를 복사해 붙여넣으세요",
@@ -525,10 +538,23 @@ if uploaded_files:
             quality = assess_image_quality(uploaded_file.getvalue())
             with quality_cols[idx % len(quality_cols)]:
                 st.image(uploaded_file, use_container_width=True)
-                st.caption(f"품질 점수: {quality['score']} / 캡처 보정 필요: {'예' if quality['needs_recapture'] else '아니오'}")
+                profile_name = {
+                    "mobile_long": "긴 모바일 캡처",
+                    "table_dense": "표 밀집 문서",
+                    "mixed_ui": "혼합 화면",
+                }.get(str(quality.get("profile") or "mixed_ui"), "혼합 화면")
+                st.caption(
+                    f"품질 점수: {quality['score']} (기준 {quality.get('recommended_min_score', 64)}) "
+                    f"/ 유형: {profile_name} / 캡처 보정 필요: {'예' if quality['needs_recapture'] else '아니오'}"
+                )
                 st.write(build_recapture_guidance(quality))
 
-if st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width=True) and uploaded_files:
+analyze_clicked = st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width=True)
+
+if analyze_clicked and not uploaded_files:
+    st.warning("업로드된 파일이 없습니다. 캡처 이미지 또는 XLSX/CSV를 먼저 업로드해 주세요.")
+
+elif analyze_clicked and uploaded_files:
     image_files = []
     excel_dfs = []
     
@@ -558,10 +584,22 @@ if st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width
         status_text.markdown(f"#### 2/4 Vision AI 분석 중... ({len(image_files)}개 이미지)")
         progress_bar.progress(50)
         
-        if st.session_state.api_key:
+        if st.session_state.api_key or ocr_engine in {"auto", "local_hybrid"}:
             try:
-                st.session_state.processing_log.append(f"🤖 Google Gemini AI 시작...")
-                vision_df = process_images_to_dataframe(st.session_state.api_key, image_files, DEFAULT_COLUMNS, mode=ocr_mode)
+                if ocr_engine == "gemini":
+                    st.session_state.processing_log.append("🤖 Google Gemini AI 시작...")
+                elif ocr_engine == "local_hybrid":
+                    st.session_state.processing_log.append("🆓 로컬 무료 OCR(PaddleOCR+Tesseract) 시작...")
+                else:
+                    st.session_state.processing_log.append("🤖/🆓 자동 엔진 선택 실행...")
+
+                vision_df = process_images_to_dataframe(
+                    st.session_state.api_key,
+                    image_files,
+                    DEFAULT_COLUMNS,
+                    mode=ocr_mode,
+                    engine=ocr_engine,
+                )
                 is_quota_hold = (
                     not vision_df.empty
                     and "사건번호" in vision_df.columns
@@ -578,8 +616,10 @@ if st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width
                 st.caption(f"상세: {str(e)[:220]}")
                 st.session_state.processing_log.append(f"✗ AI 오류: {str(e)}")
         else:
-            st.warning("⚠️ API 키가 없어 이미지 분석을 건너뜁니다")
-            st.session_state.processing_log.append("⚠️ API 키 미입력 - 이미지 분석 생략")
+            st.warning("⚠️ Gemini 모드에서는 API 키가 필요합니다")
+            st.session_state.processing_log.append("⚠️ Gemini 모드 + API 키 미입력 - 이미지 분석 생략")
+            if not excel_dfs:
+                st.info("Gemini API 키를 입력하거나 OCR 엔진을 '로컬 무료' 또는 '자동'으로 변경해 주세요.")
     
     # 3단계: 데이터 통합
     status_text.markdown("#### 3/4 데이터 통합 및 심사...")
@@ -632,6 +672,10 @@ if st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width
                         st.success(f"보완 필요 필드: {', '.join(summary.get('누락필드', [])) or '없음'}")
                     st.write(build_case_briefing(row.to_dict()))
                     st.divider()
+    else:
+        progress_bar.progress(100)
+        status_text.markdown("#### ⚠️ 처리할 데이터가 없습니다")
+        st.warning("처리할 데이터가 생성되지 않았습니다. API 키/업로드 파일 형식/파일 내용을 확인해 주세요.")
 
 df = st.session_state.df
 

@@ -1,0 +1,3 @@
+﻿cases_total,cases_matched,acc_법원명,coverage_법원명,acc_물건번호,coverage_물건번호,acc_주소,coverage_주소,acc_아파트명,coverage_아파트명,acc_감정가,coverage_감정가,mape_감정가,acc_최저매각가격,coverage_최저매각가격,mape_최저매각가격,acc_부채총액,coverage_부채총액,mape_부채총액,acc_KB시세,coverage_KB시세,mape_KB시세,acc_주요채권자,coverage_주요채권자,acc_근저당여부,coverage_근저당여부,acc_압류여부,coverage_압류여부,acc_가압류여부,coverage_가압류여부,acc_가처분여부,coverage_가처분여부,acc_overall,engine
+3.0,3.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,15.38,gemini
+3.0,3.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,15.38,local_hybrid

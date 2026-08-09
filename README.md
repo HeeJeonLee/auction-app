@@ -59,3 +59,36 @@ cd auction_rescue_mvp
 ```
 
 결과: `outputs/processed.xlsx`, `outputs/top10.pptx`, `outputs/top10.pdf` 생성됩니다.
+
+OCR 엔진 정답률 벤치마크 리포트 생성
+
+1. 정답 데이터 확인/수정:
+- `data/benchmark/ground_truth.csv`
+
+2. 엔진별 예측 결과 입력:
+- `data/benchmark/predictions/gemini.csv`
+- `data/benchmark/predictions/local_hybrid.csv`
+
+이미지에서 예측 CSV 자동 생성 (권장)
+
+```powershell
+# 로컬 무료 엔진
+.venv\Scripts\python.exe tools\generate_ocr_predictions.py --images data\benchmark\images --engine local_hybrid --mode text_first
+
+# Gemini 엔진
+.venv\Scripts\python.exe tools\generate_ocr_predictions.py --images data\benchmark\images --engine gemini --mode text_first --api-key "YOUR_GEMINI_API_KEY"
+```
+
+3. 리포트 생성 실행:
+```powershell
+.venv\Scripts\python.exe tools\build_ocr_benchmark_report.py
+```
+
+결과:
+- `outputs/ocr_benchmark_report.md` (요약 리포트)
+- `outputs/ocr_benchmark_summary.csv` (필드별 정답률 수치)
+
+리포트에는 다음 지표가 포함됩니다.
+- Accuracy: 필드 일치율
+- Coverage: 필드 값 추출률(빈 값이 아닌 비율)
+- Numeric MAPE: 숫자 필드 평균 백분율 오차(낮을수록 좋음)
