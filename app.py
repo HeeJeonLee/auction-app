@@ -493,6 +493,14 @@ uploaded_files = st.file_uploader(
 
 st.caption("권장 업로드 환경: PC 브라우저 (모바일도 가능). 대량 캡처/고해상도 파일은 PC 업로드가 더 안정적입니다.")
 
+ocr_mode_label = st.selectbox(
+    "🔎 캡처 인식 모드",
+    options=["기본(균형)", "텍스트 우선(OCR 강화)"],
+    index=1,
+    help="텍스트 우선 모드는 표/문장 인식에 집중하기 위해 캡처를 분할·고대비 처리합니다."
+)
+ocr_mode = "text_first" if "텍스트 우선" in ocr_mode_label else "balanced"
+
 if uploaded_files:
     st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")
     quality_cols = st.columns(min(3, len(uploaded_files)))
@@ -537,7 +545,7 @@ if st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width
         if st.session_state.api_key:
             try:
                 st.session_state.processing_log.append(f"🤖 Google Gemini AI 시작...")
-                vision_df = process_images_to_dataframe(st.session_state.api_key, image_files, DEFAULT_COLUMNS)
+                vision_df = process_images_to_dataframe(st.session_state.api_key, image_files, DEFAULT_COLUMNS, mode=ocr_mode)
                 is_quota_hold = (
                     not vision_df.empty
                     and "사건번호" in vision_df.columns

@@ -10,6 +10,7 @@ from vision_extractor import (
     detect_missing_fields,
     process_images_to_dataframe,
     _merge_extracted_rows,
+    _build_image_parts_for_mode,
 )
 
 
@@ -159,3 +160,14 @@ def test_merge_extracted_rows_complements_fields_for_same_case():
     assert str(merged_row["주요채권자"]).strip() != ""
     assert merged_row["근저당여부"] == "예"
     assert merged_row["압류여부"] == "예"
+
+
+def test_build_image_parts_for_text_first_returns_segmented_parts():
+    img = Image.new("RGB", (900, 2200), color=(255, 255, 255))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    parts = _build_image_parts_for_mode("long_capture.png", buffer.getvalue(), "text_first")
+
+    assert len(parts) >= 2
+    image_dict_count = sum(1 for p in parts if isinstance(p, dict) and "data" in p)
+    assert image_dict_count >= 2

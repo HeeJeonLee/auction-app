@@ -8,6 +8,8 @@ from typing import List, Any
 
 import pandas as pd
 from PIL import Image
+from PIL import ImageFilter
+from PIL import ImageOps
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", FutureWarning)
@@ -204,6 +206,47 @@ def _extract_json_array_text(raw_text: str) -> str:
     return text
 
 
+def _build_image_parts_for_mode(image_name: str, image_bytes: bytes, mode: str) -> list[Any]:
+    """인식 모드에 맞는 이미지 파트를 생성한다.
+
+    mode="text_first"인 경우, 색상/사진 요소 영향을 줄이기 위해
+    고대비 흑백 전처리와 세로 분할을 적용한다.
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    parts: list[Any] = []
+
+    if mode == "text_first":
+        # 텍스트 레이어 강화: 고대비 + 샤픈 + 이진화
+        gray = ImageOps.grayscale(img)
+        gray = ImageOps.autocontrast(gray)
+        gray = gray.filter(ImageFilter.SHARPEN)
+        bw = gray.point(lambda p: 255 if p > 145 else 0)
+
+        # 긴 모바일 캡처는 1회 호출 내에서 세로 분할 이미지로 전달
+        max_h = 1400
+        overlap = 180
+        w, h = bw.size
+        y = 0
+        strip_idx = 1
+        while y < h:
+            y2 = min(h, y + max_h)
+            crop = bw.crop((0, y, w, y2))
+            buf = io.BytesIO()
+            crop.save(buf, format="PNG")
+            parts.append({"mime_type": "image/png", "data": buf.getvalue()})
+            parts.append(f"[분할영역 {strip_idx}] 문장/표 텍스트만 우선 판독하세요.")
+            if y2 >= h:
+                break
+            y = y2 - overlap
+            strip_idx += 1
+    else:
+        ext = image_name.lower()
+        mime_type = "image/jpeg" if ext.endswith(("jpg", "jpeg")) else "image/png"
+        parts.append({"mime_type": mime_type, "data": image_bytes})
+
+    return parts
+
+
 def _to_rows(parsed_data: Any, image_name: str, default_columns: List[str]) -> list[dict[str, Any]]:
     """모델 파싱 결과를 표준 행 리스트로 변환한다."""
     if isinstance(parsed_data, dict):
@@ -343,7 +386,7 @@ def _merge_extracted_rows(rows: list[dict[str, Any]], default_columns: List[str]
     return merged_rows
 
 
-def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str]) -> pd.DataFrame:
+def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str], mode: str = "balanced") -> pd.DataFrame:
     """
     최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
     개선사항:
@@ -433,34 +476,38 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
     ]
     """
 
-    print(f"[Vision AI] 이미지 파일 로드 중... (총 {len(image_files)}개)")
+    if mode == "text_first":
+        prompt += """
+
+    [텍스트 우선 OCR 모드 규칙]
+    - 사진, 지도, 아이콘, 광고 요소는 무시하고 표/문장 텍스트만 읽습니다.
+    - 같은 항목이 반복되면 숫자/고유명사(사건번호, 금액, 채권자, 주소)가 더 선명한 값을 선택합니다.
+    - 표의 열 제목(접수순서/종류/권리자/소멸 등)을 기준으로 항목을 정렬해 해석합니다.
+    """
+
+    print(f"[Vision AI] 이미지 파일 로드 중... (총 {len(image_files)}개, mode={mode})")
 
     extracted_rows: list[dict[str, Any]] = []
     attempt_delays = [0, 10, 65]
 
     try:
         for idx, img_file in enumerate(image_files):
-            ext = img_file.name.lower()
-            mime_type = "image/jpeg" if ext.endswith(("jpg", "jpeg")) else "image/png"
             image_bytes = img_file.getvalue()
             file_size = len(image_bytes) / 1024
-            print(f"[Vision AI] 이미지 {idx+1}/{len(image_files)}: {img_file.name} ({file_size:.1f}KB, {mime_type})")
+            print(f"[Vision AI] 이미지 {idx+1}/{len(image_files)}: {img_file.name} ({file_size:.1f}KB)")
 
             quality = assess_image_quality(image_bytes)
             print(f"[Vision AI] 이미지 {idx+1} 품질 점수: {quality['score']} / 캡처 보정 필요: {quality['needs_recapture']}")
 
             # 정확도와 안정성을 위해 이미지 단위로 분리 호출한다.
-            request_payload = [
-                prompt,
-                {
-                    "mime_type": mime_type,
-                    "data": image_bytes,
-                },
+            request_payload = [prompt]
+            request_payload.extend(_build_image_parts_for_mode(img_file.name, image_bytes, mode))
+            request_payload.append(
                 (
                     f"\n\n[이미지 파일명: {img_file.name}]\n"
                     f"이 이미지만 분석하고 '원본파일명' 필드에 '{img_file.name}'을 반드시 포함하십시오.\n"
-                ),
-            ]
+                )
+            )
 
             response_text = ""
             for attempt, delay in enumerate(attempt_delays, start=1):
