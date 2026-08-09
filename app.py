@@ -288,7 +288,7 @@ st.markdown("""
 
 # ==================== 헤더 ====================
 st.markdown("<div class='main-header'>🏢 Auctiscope</div>", unsafe_allow_html=True)
-st.markdown("<div class='sub-header'>캡처본 업로드만으로 권리분석, 사건 판단, 대응 브리핑까지 이어지는 실무 보조 플랫폼</div>", unsafe_allow_html=True)
+st.markdown("<div class='sub-header'>PC/모바일 캡처 업로드만으로 권리분석, 사건 판단, 대응 브리핑까지 이어지는 실무 보조 플랫폼</div>", unsafe_allow_html=True)
 st.info("⚠️ 이 도구는 최종 법률 판단을 대신하지 않으며, 사건 정리·권리 리스크 구조화·실무 브리핑 지원을 위한 보조 도구입니다.")
 
 # ==================== 기본 설정 ====================
@@ -402,7 +402,7 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 # =========================================================================
 # SECTION 1: 업로드 및 AI 파싱
 # =========================================================================
-st.markdown("<div class='section-title'>📁 캡처본 업로드 및 자동 정리</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>📁 PC/모바일 캡처 업로드 및 자동 정리</div>", unsafe_allow_html=True)
 
 st.info(
     "📌 운영 규칙: 기준 미달 사건은 플랫폼이 데이터에서 삭제하고, 기준을 충족하는 사건만 보관합니다. "
@@ -486,10 +486,12 @@ with col_api2:
 st.markdown("---")
 
 uploaded_files = st.file_uploader(
-    "📤 스마트폰 캡처 여러 장, 또는 엑셀 데이터를 드래그하여 일괄 업로드", 
+    "📤 PC/모바일 캡처 여러 장, 또는 엑셀 데이터를 드래그하여 일괄 업로드", 
     type=["xlsx", "csv", "png", "jpg", "jpeg"], 
     accept_multiple_files=True
 )
+
+st.caption("권장 업로드 환경: PC 브라우저 (모바일도 가능). 대량 캡처/고해상도 파일은 PC 업로드가 더 안정적입니다.")
 
 if uploaded_files:
     st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")
