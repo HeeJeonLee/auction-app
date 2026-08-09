@@ -173,7 +173,8 @@ def _build_quota_fallback_dataframe(image_files: List[Any], default_columns: Lis
         row["AI_심층분석"] = detail
         row["담당자메모"] = (
             "▶ Gemini 분당 요청 한도 초과로 자동 판독이 일시 보류되었습니다. "
-            "1~2분 후 다시 실행하거나 CSV/XLSX 업로드로 먼저 심사를 진행해 주세요."
+            "앱이 내부적으로 65초 대기 재시도까지 수행했지만 한도 회복이 되지 않았습니다. "
+            "잠시 후 다시 실행하거나 CSV/XLSX 업로드로 먼저 심사를 진행해 주세요."
         )
         row["심사상태"] = "보완필요(쿼터초과)"
 
@@ -294,7 +295,8 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
 
     print(f"[Vision AI] Google Gemini API 호출 중...")
     request_payload = [prompt] + image_parts
-    attempt_delays = [0, 8, 20]
+    # Free tier/region quota가 1분 단위로 리셋되는 경우를 고려해 장기 대기를 포함한다.
+    attempt_delays = [0, 10, 65]
     response_text = ""
 
     try:
