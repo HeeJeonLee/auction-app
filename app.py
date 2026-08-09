@@ -331,6 +331,18 @@ class ClipboardImageUpload:
         return self._image_bytes
 
 
+class InMemoryImageUpload:
+    """ZIP 해제 이미지 등 메모리 기반 이미지를 uploader 형식으로 맞춘다."""
+
+    def __init__(self, image_bytes: bytes, name: str, mime_type: str = "image/png"):
+        self._image_bytes = image_bytes
+        self.name = name
+        self.type = mime_type
+
+    def getvalue(self) -> bytes:
+        return self._image_bytes
+
+
 def build_clipboard_upload(paste_result, index_hint: int):
     """클립보드 컴포넌트 결과를 업로드 객체로 변환한다."""
     if paste_result is None:
@@ -371,6 +383,35 @@ def is_image_upload(file_obj) -> bool:
     if mime_type.startswith("image/"):
         return True
     return file_name.endswith((".png", ".jpg", ".jpeg", ".webp"))
+
+
+def extract_images_from_zip(zip_file_obj, max_images: int = 300) -> tuple[list[InMemoryImageUpload], list[str]]:
+    """ZIP 업로드에서 이미지 파일만 추출한다."""
+    extracted: list[InMemoryImageUpload] = []
+    warnings: list[str] = []
+    try:
+        with zipfile.ZipFile(BytesIO(zip_file_obj.getvalue())) as zf:
+            for member in zf.infolist():
+                name = str(member.filename or "")
+                lower_name = name.lower()
+                if member.is_dir():
+                    continue
+                if not lower_name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                    continue
+                if len(extracted) >= max_images:
+                    warnings.append(f"ZIP 이미지가 {max_images}장을 넘어 초과분은 건너뜁니다: {zip_file_obj.name}")
+                    break
+
+                raw = zf.read(member)
+                if not raw:
+                    continue
+                mime = "image/jpeg" if lower_name.endswith((".jpg", ".jpeg")) else "image/png"
+                safe_name = Path(name).name or f"zip_image_{len(extracted)+1:03d}.png"
+                extracted.append(InMemoryImageUpload(raw, safe_name, mime_type=mime))
+    except Exception as zip_error:
+        warnings.append(f"ZIP 해제 실패: {getattr(zip_file_obj, 'name', 'unknown')} ({type(zip_error).__name__})")
+
+    return extracted, warnings
 
 def resolve_api_key() -> str:
     """환경변수, .env, Streamlit 시크릿, 세션 입력 순으로 API 키를 해석한다."""
@@ -634,11 +675,11 @@ with col_api2:
 st.markdown("---")
 
 capture_files = st.file_uploader(
-    "📸 캡처본 전용 드래그 업로드 (여러 장 가능)",
-    type=["png", "jpg", "jpeg", "webp"],
+    "📸 캡처본 전용 드래그 업로드 (여러 장 가능, ZIP 지원)",
+    type=["png", "jpg", "jpeg", "webp", "zip"],
     accept_multiple_files=True,
     key="capture_files_uploader",
-    help="이 영역에 캡처 이미지를 드래그 앤 드롭하세요.",
+    help="이미지 직접 업로드 또는 ZIP 일괄 업로드를 지원합니다.",
 )
 
 st.caption("붙여넣기는 드래그와 다릅니다. 아래 버튼/영역에서 Ctrl+V(Cmd+V)로 클립보드 이미지를 직접 추가할 수 있습니다.")
@@ -676,8 +717,27 @@ data_files = st.file_uploader(
 )
 
 uploaded_files = []
+capture_image_files = []
+zip_notice_messages = []
+
 if capture_files:
-    uploaded_files.extend(capture_files)
+    for cap in capture_files:
+        cap_name = str(getattr(cap, "name", "") or "").lower()
+        if cap_name.endswith(".zip"):
+            extracted_images, zip_warnings = extract_images_from_zip(cap)
+            capture_image_files.extend(extracted_images)
+            zip_notice_messages.extend(zip_warnings)
+            if extracted_images:
+                st.success(f"ZIP 해제 완료: {cap.name} -> 이미지 {len(extracted_images)}장")
+        else:
+            capture_image_files.append(cap)
+
+if zip_notice_messages:
+    for msg in zip_notice_messages[:3]:
+        st.warning(msg)
+
+if capture_image_files:
+    uploaded_files.extend(capture_image_files)
 if st.session_state.clipboard_images:
     uploaded_files.extend(st.session_state.clipboard_images)
 if data_files:
@@ -753,9 +813,26 @@ with st.expander("🛟 429 우회: 캡처 텍스트 직접 붙여넣기", expand
 
 if uploaded_files:
     try:
+        image_preview_files = [f for f in uploaded_files if is_image_upload(f)]
+        preview_limit = 18
+        preview_targets = image_preview_files[:preview_limit]
+
         st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")
-        quality_cols = st.columns(max(1, min(3, len(uploaded_files))))
-        for idx, uploaded_file in enumerate(uploaded_files):
+        if len(image_preview_files) > preview_limit:
+            st.info(f"대량 업로드 감지: 전체 {len(image_preview_files)}장 중 앞 {preview_limit}장만 미리보기합니다. 분석은 전체 파일에 적용됩니다.")
+
+        run_preview = st.checkbox(
+            "품질 미리보기 실행",
+            value=len(image_preview_files) <= 30,
+            key="quality_preview_toggle",
+            help="대량 업로드에서는 미리보기를 끄면 속도가 빨라집니다.",
+        )
+        if not run_preview:
+            st.caption("미리보기를 생략하고 분석 속도를 우선합니다.")
+        quality_cols = st.columns(max(1, min(3, max(1, len(preview_targets)))))
+        for idx, uploaded_file in enumerate(preview_targets):
+            if not run_preview:
+                break
             if is_image_upload(uploaded_file):
                 try:
                     quality = assess_image_quality(uploaded_file.getvalue())

@@ -686,10 +686,15 @@ def _build_local_ocr_variants(image_bytes: bytes, mode: str) -> list[Image.Image
             strip_h = 1300
             overlap = 180
             y = 0
+            strip_count = 0
+            max_strip_count = 8
             while y < h:
                 y2 = min(h, y + strip_h)
                 variants.append(sharp.crop((0, y, w, y2)))
                 variants.append(bw_soft.crop((0, y, w, y2)))
+                strip_count += 1
+                if strip_count >= max_strip_count:
+                    break
                 if y2 >= h:
                     break
                 y = y2 - overlap
@@ -705,6 +710,7 @@ def _run_paddle_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]:
 
     best_text = ""
     best_conf = 0.0
+    candidates: list[dict[str, Any]] = []
 
     for img in image_variants:
         arr = np.array(img.convert("RGB"))
@@ -733,11 +739,23 @@ def _run_paddle_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]:
 
         joined = "\n".join(lines).strip()
         avg_conf = (sum(confs) / len(confs)) if confs else 0.0
+        if joined:
+            candidates.append({"text": joined, "confidence": avg_conf})
         if avg_conf > best_conf or (avg_conf == best_conf and len(joined) > len(best_text)):
             best_text = joined
             best_conf = avg_conf
 
-    return {"text": best_text, "confidence": best_conf, "available": True}
+    candidates_sorted = sorted(
+        candidates,
+        key=lambda x: (float(x.get("confidence", 0.0)), len(str(x.get("text") or ""))),
+        reverse=True,
+    )
+    return {
+        "text": best_text,
+        "confidence": best_conf,
+        "available": True,
+        "candidates": candidates_sorted[:5],
+    }
 
 
 def _run_tesseract_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]:
@@ -747,6 +765,7 @@ def _run_tesseract_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]
     best_text = ""
     best_conf = 0.0
     tess_config = "--oem 3 --psm 6"
+    candidates: list[dict[str, Any]] = []
 
     for img in image_variants:
         try:
@@ -767,11 +786,45 @@ def _run_tesseract_ocr_text(image_variants: list[Image.Image]) -> dict[str, Any]
             avg_conf = 0.0
 
         text = str(text or "").strip()
+        if text:
+            candidates.append({"text": text, "confidence": avg_conf})
         if avg_conf > best_conf or (avg_conf == best_conf and len(text) > len(best_text)):
             best_text = text
             best_conf = avg_conf
 
-    return {"text": best_text, "confidence": best_conf, "available": True}
+    candidates_sorted = sorted(
+        candidates,
+        key=lambda x: (float(x.get("confidence", 0.0)), len(str(x.get("text") or ""))),
+        reverse=True,
+    )
+    return {
+        "text": best_text,
+        "confidence": best_conf,
+        "available": True,
+        "candidates": candidates_sorted[:5],
+    }
+
+
+def _build_best_row_from_ocr_candidates(candidates: list[dict[str, Any]], default_columns: List[str], image_name: str) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for cand in candidates[:5]:
+        text = str(cand.get("text") or "").strip()
+        if not text:
+            continue
+        text_sig = str(hash(text))
+        if text_sig in seen_hashes:
+            continue
+        seen_hashes.add(text_sig)
+        rows.append(_parse_text_to_row(text, default_columns, image_name))
+
+    if not rows:
+        return _parse_text_to_row("", default_columns, image_name)
+
+    merged_candidates = _merge_extracted_rows(rows, default_columns)
+    if merged_candidates:
+        return merged_candidates[0]
+    return rows[0]
 
 
 def _core_field_score(row: dict[str, Any]) -> int:
@@ -843,14 +896,26 @@ def _process_images_with_local_hybrid(image_files: List[Any], default_columns: L
         variants = _build_local_ocr_variants(image_bytes, mode)
 
         paddle_res = _run_paddle_ocr_text(variants) if paddle_ok else {"text": "", "confidence": 0.0}
-        paddle_row = _parse_text_to_row(paddle_res.get("text", ""), default_columns, img_file.name)
+        paddle_row = _build_best_row_from_ocr_candidates(
+            paddle_res.get("candidates", []),
+            default_columns,
+            img_file.name,
+        )
+        if _core_field_score(paddle_row) == 0:
+            paddle_row = _parse_text_to_row(paddle_res.get("text", ""), default_columns, img_file.name)
 
         final_row = paddle_row
         tesseract_used = False
 
         if tesseract_ok and _needs_tesseract_retry(paddle_row, float(paddle_res.get("confidence", 0.0))):
             tesseract_res = _run_tesseract_ocr_text(variants)
-            tess_row = _parse_text_to_row(tesseract_res.get("text", ""), default_columns, img_file.name)
+            tess_row = _build_best_row_from_ocr_candidates(
+                tesseract_res.get("candidates", []),
+                default_columns,
+                img_file.name,
+            )
+            if _core_field_score(tess_row) == 0:
+                tess_row = _parse_text_to_row(tesseract_res.get("text", ""), default_columns, img_file.name)
 
             merged_row = _merge_engine_rows_with_priority(paddle_row, tess_row)
             if _core_field_score(merged_row) >= _core_field_score(paddle_row):
