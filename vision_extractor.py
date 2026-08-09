@@ -841,7 +841,22 @@ def _core_field_score(row: dict[str, Any]) -> int:
     return sum(1 for k in keys if _is_informative_text(row.get(k)))
 
 
-def _needs_tesseract_retry(paddle_row: dict[str, Any], paddle_conf: float) -> bool:
+def _needs_tesseract_retry(
+    paddle_row: dict[str, Any],
+    paddle_conf: float,
+    speed_profile: str = "balanced",
+    bulk_mode: bool = False,
+) -> bool:
+    # fast + 대량 배치에서는 명확히 저신뢰인 경우에만 Tesseract를 호출해 처리량을 확보한다.
+    if speed_profile == "fast":
+        if paddle_conf < 0.52:
+            return True
+        if _core_field_score(paddle_row) < 2:
+            return True
+        return False
+
+    if bulk_mode and paddle_conf < 0.68:
+        return True
     if paddle_conf < 0.72:
         return True
     if _core_field_score(paddle_row) < 4:
@@ -934,7 +949,12 @@ def _process_images_with_local_hybrid(
         if (
             tesseract_ok
             and tesseract_retry_count < tesseract_retry_limit
-            and _needs_tesseract_retry(paddle_row, float(paddle_res.get("confidence", 0.0)))
+            and _needs_tesseract_retry(
+                paddle_row,
+                float(paddle_res.get("confidence", 0.0)),
+                speed_profile=speed_profile,
+                bulk_mode=bulk_mode,
+            )
         ):
             tesseract_res = _run_tesseract_ocr_text(variants)
             tess_row = _build_best_row_from_ocr_candidates(

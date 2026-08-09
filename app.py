@@ -551,6 +551,71 @@ def status_mask(frame: pd.DataFrame, keyword: str = "적격") -> pd.Series:
         return pd.Series([False] * len(frame), index=frame.index)
     return frame["심사상태"].astype(str).str.contains(keyword, na=False)
 
+
+def _split_pipe_values(raw_value: str, limit: int = 6) -> list[str]:
+    text = str(raw_value or "")
+    items = [item.strip() for item in text.split("|") if str(item).strip()]
+    return items[:limit]
+
+
+def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None:
+    if frame.empty:
+        return
+
+    st.markdown("### 🧩 규칙 실행 결과 요약 카드")
+    st.caption("실패 규칙 ID, 권고문, 취하 스크립트를 사건 단위로 빠르게 확인할 수 있습니다.")
+
+    preview_rows = frame.head(max_cards)
+    for _, row in preview_rows.iterrows():
+        row_dict = row.to_dict()
+        case_no = str(row.get("사건번호") or "미상")
+        verdict = str(row.get("규칙판정") or "미생성")
+        score = str(row.get("규칙점수") or "-")
+        failed_ids: list[str] = []
+        recommendations: list[str] = []
+        withdrawal_script = str(row.get("취하스크립트") or "")
+
+        try:
+            eval_result = evaluate_manual_rules(row_dict)
+            failed_ids = eval_result.get("failed_rule_ids", [])[:6]
+            recommendations = eval_result.get("recommendations", [])[:3]
+            if not withdrawal_script.strip():
+                withdrawal_script = str(eval_result.get("withdrawal_script") or "")
+        except Exception:
+            failed_ids = []
+            recommendations = []
+
+        if not failed_ids:
+            failed_ids = _split_pipe_values(row.get("규칙근거", ""), limit=4)
+
+        with st.container(border=True):
+            head_col1, head_col2, head_col3 = st.columns([2, 1, 1])
+            with head_col1:
+                st.markdown(f"**사건번호:** {case_no}")
+            with head_col2:
+                st.markdown(f"**규칙판정:** {verdict}")
+            with head_col3:
+                st.markdown(f"**규칙점수:** {score}")
+
+            st.markdown("**실패 규칙 ID/근거 요약**")
+            if failed_ids:
+                st.write(" · ".join([str(x) for x in failed_ids]))
+            else:
+                st.write("없음")
+
+            st.markdown("**권고문 요약**")
+            if recommendations:
+                for rec in recommendations:
+                    st.write(f"- {rec}")
+            else:
+                st.write("권고문 없음")
+
+            st.markdown("**취하 스크립트(요약)**")
+            if withdrawal_script.strip():
+                st.info(withdrawal_script[:280])
+            else:
+                st.info("생성된 스크립트가 없습니다.")
+
 # =========================================================================
 # SECTION 1: 업로드 및 AI 파싱
 # =========================================================================
@@ -1118,6 +1183,9 @@ if not df.empty:
         </div>
         """, unsafe_allow_html=True)
     
+    with st.expander("🧩 규칙 실행 카드 보기", expanded=True):
+        render_rule_execution_cards(df, max_cards=8)
+
     # 컴플라이언스 경고
     if "열람필수" in df["등기부열람여부"].values:
         st.markdown("""
