@@ -864,13 +864,16 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_100p_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무와_경매_취하_유도_프로세스.md"
     manual_mvp_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_검수본_v2.md"
+    manual_p01_path = Path(__file__).resolve().parent / "docs" / "01_p01_사건식별_검수표_v1.md"
     manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
     manual_mvp_name = "05_MVP_권리분석32p_취하18p_검수본_v2.md"
+    manual_p01_name = "01_p01_사건식별_검수표_v1.md"
 
     manual_100p_text = ""
     manual_process_text = ""
     manual_mvp_text = ""
+    manual_p01_text = ""
     try:
         manual_100p_text = read_utf8_text_file(
             str(manual_100p_path),
@@ -884,94 +887,68 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
             str(manual_mvp_path),
             manual_mvp_path.stat().st_mtime if manual_mvp_path.exists() else 0.0,
         )
+        manual_p01_text = read_utf8_text_file(
+            str(manual_p01_path),
+            manual_p01_path.stat().st_mtime if manual_p01_path.exists() else 0.0,
+        )
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
 
     st.markdown("### 권리분석 고도화 매뉴얼")
-    st.info("검수 기준 문서는 MVP 50p입니다. 100p/보조 문서는 참고 자료로 분리했습니다.")
+    st.info("검수 기준 문서는 p01 단일 검수표입니다. 전체 매뉴얼은 뒤에서 참고용으로만 엽니다.")
 
-    if manual_mvp_text:
-        st.markdown("#### ✅ 검수 기준: MVP 50p")
-        mvp_col1, mvp_col2, mvp_col3 = st.columns(3)
-        with mvp_col1:
+    if manual_p01_text:
+        st.markdown("#### ✅ 현재 검수 기준: p01 사건 식별")
+        p01_col1, p01_col2 = st.columns(2)
+        with p01_col1:
             st.download_button(
-                "📥 MVP 50p 다운로드 (MD)",
+                "📥 p01 검수표 다운로드 (MD)",
+                data=manual_p01_text,
+                file_name=manual_p01_name,
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with p01_col2:
+            st.download_button(
+                "📥 p01 검수표 다운로드 (TXT)",
+                data=manual_p01_text,
+                file_name=manual_p01_name.replace(".md", ".txt"),
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+        st.markdown(manual_p01_text)
+    else:
+        st.warning("p01 검수표 파일을 읽지 못했습니다. docs 경로를 확인해 주세요.")
+
+    with st.expander("전체 매뉴얼 검토", expanded=False):
+        if manual_mvp_text:
+            st.download_button(
+                "📥 전체 매뉴얼 다운로드 (MD)",
                 data=manual_mvp_text,
                 file_name=manual_mvp_name,
                 mime="text/markdown",
                 use_container_width=True,
             )
-        with mvp_col2:
+            st.markdown(manual_mvp_text[:12000])
+
+        if manual_100p_text:
             st.download_button(
-                "📥 MVP 50p 다운로드 (TXT)",
-                data=manual_mvp_text,
-                file_name=manual_mvp_name.replace(".md", ".txt"),
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with mvp_col3:
-            mvp_zip = build_manual_zip_bundle(
-                "",
-                "",
-                "",
-                "",
-                manual_mvp_name,
-                manual_mvp_text,
-            )
-            bundle_zip = build_manual_zip_bundle(
-                manual_100p_name,
-                manual_100p_text,
-                manual_process_name,
-                manual_process_text,
-                manual_mvp_name,
-                manual_mvp_text,
-            )
-            st.download_button(
-                "📥 검수 번들 다운로드 (ZIP, MVP50p 전용)",
-                data=mvp_zip,
-                file_name="auction_manual_mvp50_bundle.zip",
-                mime="application/zip",
-                use_container_width=True,
-            )
-            st.download_button(
-                "📥 전체 번들 다운로드 (ZIP, 아카이브 포함)",
-                data=bundle_zip,
-                file_name="auction_manual_bundle.zip",
-                mime="application/zip",
+                "📥 100p 참고문서 다운로드 (MD)",
+                data=manual_100p_text,
+                file_name=manual_100p_name,
+                mime="text/markdown",
                 use_container_width=True,
             )
 
-        st.caption("기본 검수는 MVP50p 전용 번들을 사용합니다.")
-
-        enable_mvp_preview = st.checkbox(
-            "MVP 50p 미리보기 로드",
-            value=True,
-            key="mvp_manual_preview_toggle",
-            help="검수 중 빠른 확인을 위해 기본 ON입니다.",
-        )
-        if enable_mvp_preview:
-            section_map = split_manual_sections(manual_mvp_text)
-            p01_text = section_map.get("p01", "")
-            if p01_text:
-                st.markdown("#### 현재 검수 대상: p01")
-                st.markdown(p01_text)
-            else:
-                st.markdown(manual_mvp_text)
-
-            with st.expander("다른 페이지 검토", expanded=False):
-                section_keys = [key for key in sorted(section_map.keys()) if key != "p01"]
-                if section_keys:
-                    selected_section = st.selectbox(
-                        "검토할 다른 페이지 선택",
-                        options=section_keys,
-                        index=0,
-                        key="mvp_section_selector",
-                    )
-                    st.markdown(section_map.get(selected_section, ""))
-                else:
-                    st.caption("다른 페이지를 불러올 수 없습니다.")
-    else:
-        st.warning("MVP 50p 파일을 읽지 못했습니다. docs 경로를 확인해 주세요.")
+        if manual_process_text:
+            st.download_button(
+                "📥 보조 문서 다운로드 (MD)",
+                data=manual_process_text,
+                file_name=manual_process_name,
+                mime="text/markdown",
+                use_container_width=True,
+            )
 
     show_archive_docs = st.checkbox(
         "아카이브 문서 표시",
