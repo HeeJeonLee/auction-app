@@ -54,10 +54,16 @@ def generate_pptx_bytes(rows: list[dict]) -> bytes:
         p.text = f"부채총액(청구액 등): {format_price(r.get('부채총액'))}"
         
         p = body.add_paragraph()
-        p.text = "■ 권리 분석 서머리"
+        p.text = "■ 자동 정리 요약"
         p = body.add_paragraph()
         p.level = 1
         p.text = str(r.get("권리요약", "특이사항 없음"))
+
+        p = body.add_paragraph()
+        p.text = "■ 보완 필요 필드"
+        p = body.add_paragraph()
+        p.level = 1
+        p.text = str(r.get("보완필드", "없음"))
         
         p = body.add_paragraph()
         p.text = "■ 종합 제안 (소유주/채권자 설득 전략)"
@@ -109,6 +115,7 @@ def generate_pdf_bytes(rows: list[dict]) -> bytes:
             ("부채총액", format_price(r.get('부채총액'))),
             ("분석점수", str(r.get('분석점수', '')) + " 점 (" + str(r.get('분석등급', '')) + "등급)"),
             ("권리현황", str(r.get('권리요약', '이슈 없음'))),
+            ("보완필드", str(r.get('보완필드', '없음'))),
         ]
         
         for k, v in fields:

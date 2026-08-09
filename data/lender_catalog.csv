@@ -1,0 +1,4 @@
+name,type,contact,email,preferred_regions,preferred_property_types,max_ltv,approval_criteria,verification_status,last_checked,operational_status,history
+저축은행 A,A,02-555-0101,npl@samplebank.co.kr,서울;경기,아파트,0.8,권리이슈 없음;LTV 80% 이하;수도권 아파트 우선,검증됨,2026-08-09,영업중,2026-07 기준 서울 아파트 브릿지 승인 경험
+대부 B,B,010-777-0202,bridge@samplefinance.co.kr,서울;경기;인천,아파트;오피스텔,0.9,권리이슈 1개 이하;LTV 90% 이하;신속 심사 가능,검증됨,2026-08-09,영업중,2026-06 기준 고LTV 브릿지 자금 조달 경험
+NPL 전문 C,C,02-555-0303,nplteam@sampleamc.co.kr,전국,아파트;상가;토지,1.0,권리이슈 2개 이상;NPL/특수권리 처리 경험;채권자 헤어컷 협상 가능,검증됨,2026-08-09,영업중,2026-05 기준 특수권리 물건 대위변제 경험

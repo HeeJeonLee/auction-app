@@ -13,6 +13,7 @@ from analysis import (
     build_visit_advice,
     passes_market_filters,
     needs_registry_verification,
+    evaluate_case_policy,
 )
 
 # PPT/PDF helpers
@@ -45,13 +46,15 @@ def process_file(csv_path: str):
             r["추천대주"] = recommend_lender({"분석점수": score, "분석등급": grade})
 
         try:
-            market_ok = passes_market_filters(r)
+            policy_eval = evaluate_case_policy(r)
+            market_ok = passes_market_filters(r) and policy_eval.get("keep_data", False)
         except Exception:
+            policy_eval = {"decision": "reject", "keep_data": False, "reason": "정책평가 실패"}
             market_ok = False
 
         if not market_ok:
             # schedule for deletion (by default move to outputs/deleted for audit)
-            deleted_rows.append(r)
+            deleted_rows.append({**r, "심사결과": policy_eval.get("reason", "기준 미달")})
             continue
 
         if needs_registry_verification(r):

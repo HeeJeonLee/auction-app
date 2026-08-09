@@ -1,0 +1,317 @@
+import os
+import json
+import io
+import warnings
+from typing import List, Any
+
+import pandas as pd
+from PIL import Image
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", FutureWarning)
+    try:
+        import google.generativeai as genai
+    except Exception:  # pragma: no cover - 환경에 패키지가 없을 수 있음
+        genai = None
+
+from analysis import _safe_float, get_creditor_analysis_guidance, structure_rights_analysis
+
+
+def assess_image_quality(image_bytes: bytes) -> dict[str, Any]:
+    """간단한 이미지 품질 지표를 계산해 재촬영 여부를 판단한다."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("L")
+        gray = img.resize((200, 200))
+        pixels = list(gray.get_flattened_data())
+        mean_brightness = sum(pixels) / len(pixels) / 255.0
+        variance = sum((p - mean_brightness) ** 2 for p in pixels) / len(pixels)
+        edge_score = 0.0
+        for i in range(1, gray.width - 1):
+            for j in range(1, gray.height - 1):
+                diff = abs(gray.getpixel((i, j)) - gray.getpixel((i - 1, j))) + abs(gray.getpixel((i, j)) - gray.getpixel((i, j - 1)))
+                edge_score += diff
+        edge_score /= (gray.width * gray.height * 255 * 2)
+
+        score = 70
+        if mean_brightness < 0.3:
+            score -= 20
+        elif mean_brightness > 0.85:
+            score -= 10
+        if variance < 0.02:
+            score -= 15
+        if edge_score < 0.05:
+            score -= 10
+
+        score = max(0, min(100, score))
+        return {
+            "score": int(score),
+            "brightness": round(mean_brightness, 3),
+            "variance": round(variance, 3),
+            "edge_score": round(edge_score, 3),
+            "needs_recapture": score < 65,
+        }
+    except Exception:
+        return {"score": 50, "brightness": 0.5, "variance": 0.0, "edge_score": 0.0, "needs_recapture": True}
+
+
+def build_recapture_guidance(quality: dict[str, Any]) -> str:
+    if quality.get("needs_recapture"):
+        return "캡처 보정 권장: 문서가 너무 어둡거나 흐릿하거나 잘려 보이면, 화면을 더 선명하게 보이도록 캡처를 다시 업로드해 주세요."
+    return "품질 양호: OCR 및 자동 정리 단계로 바로 진행해도 좋습니다."
+
+
+def detect_missing_fields(row: dict[str, Any]) -> list[str]:
+    """권리분석에 꼭 필요한 핵심 필드가 누락됐는지 검사한다."""
+    required_fields = [
+        "사건번호",
+        "법원명",
+        "아파트명",
+        "주소",
+        "감정가",
+        "부채총액",
+        "KB시세",
+        "주요채권자",
+        "근저당여부",
+    ]
+    missing = []
+    for field in required_fields:
+        value = row.get(field, "")
+        if value is None or str(value).strip() == "":
+            missing.append(field)
+    return missing
+
+
+def build_structured_case_summary(row: dict[str, Any]) -> dict[str, Any]:
+    """OCR/입력값을 정리해 권리분석으로 바로 이어지도록 구조화한다."""
+    normalized = {}
+    for key, value in row.items():
+        if isinstance(value, str):
+            normalized[key] = value.strip()
+        else:
+            normalized[key] = value
+
+    debt = _safe_float(normalized.get("부채총액"))
+    kb = _safe_float(normalized.get("KB시세"))
+    appraisal = _safe_float(normalized.get("감정가"))
+    expected = _safe_float(normalized.get("낙찰예상가"))
+    creditor = str(normalized.get("주요채권자") or normalized.get("채권자") or "")
+
+    rights = structure_rights_analysis(normalized)
+    summary_parts = []
+    if normalized.get("아파트명"):
+        summary_parts.append(f"{normalized['아파트명']}")
+    if normalized.get("주소"):
+        summary_parts.append(f"{normalized['주소']}")
+    if normalized.get("법원명"):
+        summary_parts.append(f"{normalized['법원명']} 기준")
+    if normalized.get("사건번호"):
+        summary_parts.append(f"사건번호 {normalized['사건번호']}")
+
+    summary = " / ".join(summary_parts) if summary_parts else "입력된 경매 물건 정보"
+    summary += f". 부채총액 {debt:,.0f}원, KB시세 {kb:,.0f}원, 감정가 {appraisal:,.0f}원, 예상낙찰가 {expected:,.0f}원 기준으로 정리했습니다."
+
+    missing_fields = detect_missing_fields(normalized)
+    completion_score = 70
+    if normalized.get("사건번호"):
+        completion_score += 5
+    if normalized.get("아파트명"):
+        completion_score += 5
+    if normalized.get("주소"):
+        completion_score += 5
+    if creditor:
+        completion_score += 5
+    if rights["rights_flags"]:
+        completion_score += 5
+    completion_score -= min(20, len(missing_fields) * 5)
+
+    status = "완료" if completion_score >= 85 else "보완필요"
+    return {
+        "정리상태": status,
+        "완성도": min(100, max(0, completion_score)),
+        "자동정리요약": summary,
+        "권리플래그": rights["rights_flags"],
+        "채권자가이드": get_creditor_analysis_guidance(creditor),
+        "누락필드": missing_fields,
+    }
+
+
+def build_case_briefing(row: dict[str, Any]) -> str:
+    """설득자료용 1페이지 요약문을 만든다."""
+    summary = build_structured_case_summary(row)
+    creditor = summary["채권자가이드"]
+    rights = ", ".join(summary["권리플래그"]) if summary["권리플래그"] else "권리이슈 없음"
+    missing_fields = ", ".join(summary.get("누락필드", [])) if summary.get("누락필드") else "없음"
+    return (
+        f"{summary['자동정리요약']}\n"
+        f"권리 관점: {rights}.\n"
+        f"협상 포인트: {creditor}\n"
+        f"보완 필요 필드: {missing_fields}\n"
+        f"실무 추천: 캡처본의 핵심 사실을 기준으로 권리분석과 채권자 대응 포인트를 먼저 정리한 뒤, 소유주와 이해관계자에게 설득 가능한 흐름으로 제시하세요."
+    )
+
+
+def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str]) -> pd.DataFrame:
+    """
+    최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
+    개선사항:
+    - 상세한 에러 로깅
+    - 더 명확한 AI 프롬프트
+    - 안정적인 fallback 처리
+    """
+    if not api_key:
+        raise ValueError("❌ Gemini API 키가 필요합니다. https://makersuite.google.com/app/apikey 에서 발급받으세요.")
+    
+    print(f"[Vision AI] API 키 설정 중... (키 길이: {len(api_key)}자)")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-1.5-pro')
+    print(f"[Vision AI] Gemini 1.5 Pro 모델 로드 완료")
+
+    prompt = """
+    당신은 한국 법원 경매 및 NPL 투자 심사를 수행하는 최상위 실무형 전문가입니다.
+    다음 이미지에서 경매 물건의 핵심 정보를 정확하고 빠르게 추출하여 반드시 JSON 배열로 반환하십시오.
+
+    ⚠️ 필수 규칙:
+    1. 절대 빈 배열([])을 반환하지 마십시오.
+    2. 이미지가 흐리거나 일부 정보가 누락되더라도, 보이는 항목은 최대한 정확히 추출하십시오.
+    3. 모르면 "미상" 또는 "0" 또는 ""로 채우되, 반드시 객체를 생성하십시오.
+    4. 여러 이미지가 동일 물건을 반복해도 각각 별개 객체로 처리하십시오.
+    5. 숫자는 쉼표 없이 작성하십시오. 예: 500000000.
+    6. 값이 불명확하면 추정하되, 추정 근거를 AI_심층분석에 포함하십시오.
+
+    [우선 추출 대상]
+    - 원본파일명
+    - 사건번호
+    - 매각기일
+    - 법원명
+    - 물건번호
+    - 주소
+    - 아파트명
+    - 감정가
+    - 최저매각가격
+    - 낙찰예상가
+    - 부채총액
+    - KB시세
+    - 주요채권자
+    - 청산가능여부
+    - 근저당여부
+    - 압류여부
+    - 가압류여부
+    - 가처분여부
+    - 임차권등기여부
+    - 전세권여부
+    - 가등기여부
+
+    [전문가 심층 분석 형식]
+    - AI_심층분석: 3~4문장으로 작성하되, 다음 요소를 포함하십시오.
+      1) 시세 대비 부채비율(LTV) 또는 낙찰가 대비 부담 수준
+      2) 권리상 하자와 명도 리스크
+      3) 실무상 청산 가능성 또는 협의 가능성
+      4) 채권자/법원 관점에서의 핵심 리스크
+
+    [출력 형식]
+    반드시 아래 형식의 JSON 배열만 반환하십시오.
+    [
+      {
+        "원본파일명": "",
+        "사건번호": "",
+        "매각기일": "",
+        "법원명": "",
+        "물건번호": "",
+        "주소": "",
+        "아파트명": "",
+        "감정가": "",
+        "최저매각가격": "",
+        "낙찰예상가": "",
+        "부채총액": "",
+        "KB시세": "",
+        "주요채권자": "",
+        "청산가능여부": "",
+        "근저당여부": "",
+        "압류여부": "",
+        "가압류여부": "",
+        "가처분여부": "",
+        "임차권등기여부": "",
+        "전세권여부": "",
+        "가등기여부": "",
+        "AI_심층분석": ""
+      }
+    ]
+    """
+
+    image_parts = []
+    print(f"[Vision AI] 이미지 파일 로드 중... (총 {len(image_files)}개)")
+    
+    for idx, img_file in enumerate(image_files):
+        ext = img_file.name.lower()
+        mime_type = "image/jpeg" if ext.endswith(('jpg', 'jpeg')) else "image/png"
+        file_size = len(img_file.getvalue()) / 1024  # KB
+        print(f"[Vision AI] 이미지 {idx+1}/{len(image_files)}: {img_file.name} ({file_size:.1f}KB, {mime_type})")
+        
+        quality = assess_image_quality(img_file.getvalue())
+        print(f"[Vision AI] 이미지 {idx+1} 품질 점수: {quality['score']} / 캡처 보정 필요: {quality['needs_recapture']}")
+        image_parts.append({
+            "mime_type": mime_type,
+            "data": img_file.getvalue()
+        })
+        # AI에게 파일명을 명시적으로 알려줌
+        image_parts.append(f"\n\n[이미지 파일명: {img_file.name}]\n위 이미지를 분석하여 '원본파일명' 필드에 '{img_file.name}'을 반드시 포함하십시오.\n\n")
+
+    print(f"[Vision AI] Google Gemini API 호출 중...")
+    try:
+        response = model.generate_content([prompt] + image_parts)
+        print(f"[Vision AI] ✓ API 응답 수신 완료 (응답 길이: {len(response.text)}자)")
+        result_text = response.text.replace("```json", "").replace("```", "").strip()
+        print(f"[Vision AI] 클린업된 JSON 텍스트:")
+        print(result_text[:500])  # 처음 500자만 출력
+        
+        try:
+            parsed_data = json.loads(result_text)
+            print(f"[Vision AI] ✓ JSON 파싱 성공! 추출된 객체 수: {len(parsed_data) if isinstance(parsed_data, list) else 1}")
+        except json.JSONDecodeError as je:
+            print(f"[Vision AI] ✗ JSON 파싱 실패: {je}")
+            print(f"[Vision AI] 원본 응답: {result_text[:1000]}")
+            # Fallback 데이터 생성
+            parsed_data = [{
+                "사건번호": "판독불가",
+                "원본파일명": image_files[0].name if image_files else "",
+                "AI_심층분석": f"[오류] AI 응답을 JSON으로 변환하는 데 실패했습니다. 원본 응답: {result_text[:200]}..."
+            }]
+
+        if not parsed_data or len(parsed_data) == 0:
+            print(f"[Vision AI] ⚠️ 빈 데이터 배열 감지 - Fallback 생성")
+            parsed_data = [{
+                "사건번호": "정보없음",
+                "원본파일명": image_files[0].name if image_files else "",
+                "AI_심층분석": "[경고] AI가 이미지에서 경매 정보를 찾지 못했습니다. 캡처본이 올바른 경매 화면인지 확인하세요."
+            }]
+
+        if isinstance(parsed_data, dict):
+            print(f"[Vision AI] 단일 객체를 리스트로 변환")
+            parsed_data = [parsed_data]
+            
+        print(f"[Vision AI] DataFrame 생성 중...")
+        extracted_rows = []
+        for idx, data in enumerate(parsed_data):
+            row = {col: "" for col in default_columns}
+            for key, value in data.items():
+                if key in row:
+                    row[key] = value
+            row["AI_심층분석"] = data.get("AI_심층분석", "")
+
+            auto_summary = build_structured_case_summary(row)
+            row["권리요약"] = auto_summary["자동정리요약"]
+            row["담당자메모"] = build_case_briefing(row)
+            row["심사상태"] = auto_summary["정리상태"]
+            extracted_rows.append(row)
+            print(f"[Vision AI]   - 행 {idx+1}: 사건번호={data.get('사건번호', '미상')}, 파일명={data.get('원본파일명', '')}")
+
+        result_df = pd.DataFrame(extracted_rows)
+        print(f"[Vision AI] ✅ 최종 DataFrame 생성 완료: {len(result_df)}행 x {len(result_df.columns)}열")
+        return result_df
+        
+    except Exception as e:
+        print(f"[Vision AI] ❌ 치명적 오류 발생: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[Vision AI] 상세 스택:")
+        traceback.print_exc()
+        raise Exception(f"❌ AI 심층 구조화 파싱 실패: {e}\n\n가능한 원인:\n1. API 키가 만료되었거나 잘못됨\n2. 네트워크 연결 문제\n3. 이미지 파일이 손상됨\n4. API 할당량 초과")
