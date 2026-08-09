@@ -2,6 +2,7 @@ import os
 import json
 import io
 import time
+import re
 import warnings
 from typing import List, Any
 
@@ -185,6 +186,66 @@ def _build_quota_fallback_dataframe(image_files: List[Any], default_columns: Lis
     return pd.DataFrame(extracted_rows)
 
 
+def _extract_json_array_text(raw_text: str) -> str:
+    """응답에 설명 문장이 섞여 있어도 JSON 배열/객체 본문만 최대한 복원한다."""
+    text = (raw_text or "").replace("```json", "").replace("```", "").strip()
+    if not text:
+        return ""
+
+    # 가장 먼저 배열 형태를 찾고, 없으면 객체를 배열로 감싼다.
+    arr_match = re.search(r"\[.*\]", text, flags=re.DOTALL)
+    if arr_match:
+        return arr_match.group(0).strip()
+
+    obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if obj_match:
+        return f"[{obj_match.group(0).strip()}]"
+
+    return text
+
+
+def _to_rows(parsed_data: Any, image_name: str, default_columns: List[str]) -> list[dict[str, Any]]:
+    """모델 파싱 결과를 표준 행 리스트로 변환한다."""
+    if isinstance(parsed_data, dict):
+        parsed_data = [parsed_data]
+    if not isinstance(parsed_data, list):
+        parsed_data = []
+
+    rows = []
+    for data in parsed_data:
+        row = {col: "" for col in default_columns}
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key in row:
+                    row[key] = value
+            if not row.get("원본파일명"):
+                row["원본파일명"] = image_name
+            row["AI_심층분석"] = data.get("AI_심층분석", "")
+        else:
+            row["원본파일명"] = image_name
+            row["사건번호"] = "판독불가"
+            row["AI_심층분석"] = "[오류] AI 결과 형식이 비정상이라 기본 행으로 대체되었습니다."
+
+        auto_summary = build_structured_case_summary(row)
+        row["권리요약"] = auto_summary["자동정리요약"]
+        row["담당자메모"] = build_case_briefing(row)
+        row["심사상태"] = auto_summary["정리상태"]
+        rows.append(row)
+
+    if not rows:
+        row = {col: "" for col in default_columns}
+        row["원본파일명"] = image_name
+        row["사건번호"] = "정보없음"
+        row["AI_심층분석"] = "[경고] AI가 이미지에서 경매 정보를 충분히 추출하지 못했습니다."
+        auto_summary = build_structured_case_summary(row)
+        row["권리요약"] = auto_summary["자동정리요약"]
+        row["담당자메모"] = build_case_briefing(row)
+        row["심사상태"] = auto_summary["정리상태"]
+        rows.append(row)
+
+    return rows
+
+
 def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str]) -> pd.DataFrame:
     """
     최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
@@ -275,99 +336,80 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
     ]
     """
 
-    image_parts = []
     print(f"[Vision AI] 이미지 파일 로드 중... (총 {len(image_files)}개)")
-    
-    for idx, img_file in enumerate(image_files):
-        ext = img_file.name.lower()
-        mime_type = "image/jpeg" if ext.endswith(('jpg', 'jpeg')) else "image/png"
-        file_size = len(img_file.getvalue()) / 1024  # KB
-        print(f"[Vision AI] 이미지 {idx+1}/{len(image_files)}: {img_file.name} ({file_size:.1f}KB, {mime_type})")
-        
-        quality = assess_image_quality(img_file.getvalue())
-        print(f"[Vision AI] 이미지 {idx+1} 품질 점수: {quality['score']} / 캡처 보정 필요: {quality['needs_recapture']}")
-        image_parts.append({
-            "mime_type": mime_type,
-            "data": img_file.getvalue()
-        })
-        # AI에게 파일명을 명시적으로 알려줌
-        image_parts.append(f"\n\n[이미지 파일명: {img_file.name}]\n위 이미지를 분석하여 '원본파일명' 필드에 '{img_file.name}'을 반드시 포함하십시오.\n\n")
 
-    print(f"[Vision AI] Google Gemini API 호출 중...")
-    request_payload = [prompt] + image_parts
-    # Free tier/region quota가 1분 단위로 리셋되는 경우를 고려해 장기 대기를 포함한다.
+    extracted_rows: list[dict[str, Any]] = []
     attempt_delays = [0, 10, 65]
-    response_text = ""
 
     try:
-        for attempt, delay in enumerate(attempt_delays, start=1):
-            if delay > 0:
-                print(f"[Vision AI] 호출 제한 회피를 위해 {delay}초 대기 후 재시도합니다... ({attempt}/{len(attempt_delays)})")
-                time.sleep(delay)
+        for idx, img_file in enumerate(image_files):
+            ext = img_file.name.lower()
+            mime_type = "image/jpeg" if ext.endswith(("jpg", "jpeg")) else "image/png"
+            image_bytes = img_file.getvalue()
+            file_size = len(image_bytes) / 1024
+            print(f"[Vision AI] 이미지 {idx+1}/{len(image_files)}: {img_file.name} ({file_size:.1f}KB, {mime_type})")
+
+            quality = assess_image_quality(image_bytes)
+            print(f"[Vision AI] 이미지 {idx+1} 품질 점수: {quality['score']} / 캡처 보정 필요: {quality['needs_recapture']}")
+
+            # 정확도와 안정성을 위해 이미지 단위로 분리 호출한다.
+            request_payload = [
+                prompt,
+                {
+                    "mime_type": mime_type,
+                    "data": image_bytes,
+                },
+                (
+                    f"\n\n[이미지 파일명: {img_file.name}]\n"
+                    f"이 이미지만 분석하고 '원본파일명' 필드에 '{img_file.name}'을 반드시 포함하십시오.\n"
+                ),
+            ]
+
+            response_text = ""
+            for attempt, delay in enumerate(attempt_delays, start=1):
+                if delay > 0:
+                    print(f"[Vision AI] 호출 제한 회피를 위해 {delay}초 대기 후 재시도합니다... ({attempt}/{len(attempt_delays)})")
+                    time.sleep(delay)
+
+                try:
+                    response = model.generate_content(request_payload)
+                    response_text = str(getattr(response, "text", "") or "").strip()
+                    if not response_text:
+                        raise ValueError("AI 응답이 비어 있습니다.")
+                    print(f"[Vision AI] ✓ API 응답 수신 완료 (응답 길이: {len(response_text)}자)")
+                    break
+                except Exception as api_error:
+                    if _is_rate_limited_error(api_error):
+                        print(f"[Vision AI] ⚠️ Rate limit 감지: {api_error}")
+                        if attempt == len(attempt_delays):
+                            return _build_quota_fallback_dataframe(
+                                image_files,
+                                default_columns,
+                                "[보류] Gemini API 분당 호출 한도(429 RATE_LIMIT_EXCEEDED)로 자동 판독이 지연되었습니다.",
+                            )
+                        continue
+                    raise
+
+            result_text = _extract_json_array_text(response_text)
+            print(f"[Vision AI] 클린업된 JSON 텍스트:")
+            print(result_text[:500])
 
             try:
-                response = model.generate_content(request_payload)
-                response_text = str(getattr(response, "text", "") or "").strip()
-                if not response_text:
-                    raise ValueError("AI 응답이 비어 있습니다.")
-                print(f"[Vision AI] ✓ API 응답 수신 완료 (응답 길이: {len(response_text)}자)")
-                break
-            except Exception as api_error:
-                if _is_rate_limited_error(api_error):
-                    print(f"[Vision AI] ⚠️ Rate limit 감지: {api_error}")
-                    if attempt == len(attempt_delays):
-                        return _build_quota_fallback_dataframe(
-                            image_files,
-                            default_columns,
-                            "[보류] Gemini API 분당 호출 한도(429 RATE_LIMIT_EXCEEDED)로 자동 판독이 지연되었습니다.",
-                        )
-                    continue
-                raise
+                parsed_data = json.loads(result_text)
+                extracted_count = len(parsed_data) if isinstance(parsed_data, list) else 1
+                print(f"[Vision AI] ✓ JSON 파싱 성공! 추출된 객체 수: {extracted_count}")
+            except json.JSONDecodeError as je:
+                print(f"[Vision AI] ✗ JSON 파싱 실패: {je}")
+                print(f"[Vision AI] 원본 응답: {response_text[:1000]}")
+                parsed_data = [{
+                    "사건번호": "판독불가",
+                    "원본파일명": img_file.name,
+                    "AI_심층분석": f"[오류] AI 응답을 JSON으로 변환하는 데 실패했습니다. 원본 응답: {response_text[:200]}...",
+                }]
 
-        result_text = response_text.replace("```json", "").replace("```", "").strip()
-        print(f"[Vision AI] 클린업된 JSON 텍스트:")
-        print(result_text[:500])  # 처음 500자만 출력
-        
-        try:
-            parsed_data = json.loads(result_text)
-            print(f"[Vision AI] ✓ JSON 파싱 성공! 추출된 객체 수: {len(parsed_data) if isinstance(parsed_data, list) else 1}")
-        except json.JSONDecodeError as je:
-            print(f"[Vision AI] ✗ JSON 파싱 실패: {je}")
-            print(f"[Vision AI] 원본 응답: {result_text[:1000]}")
-            # Fallback 데이터 생성
-            parsed_data = [{
-                "사건번호": "판독불가",
-                "원본파일명": image_files[0].name if image_files else "",
-                "AI_심층분석": f"[오류] AI 응답을 JSON으로 변환하는 데 실패했습니다. 원본 응답: {result_text[:200]}..."
-            }]
-
-        if not parsed_data or len(parsed_data) == 0:
-            print(f"[Vision AI] ⚠️ 빈 데이터 배열 감지 - Fallback 생성")
-            parsed_data = [{
-                "사건번호": "정보없음",
-                "원본파일명": image_files[0].name if image_files else "",
-                "AI_심층분석": "[경고] AI가 이미지에서 경매 정보를 찾지 못했습니다. 캡처본이 올바른 경매 화면인지 확인하세요."
-            }]
-
-        if isinstance(parsed_data, dict):
-            print(f"[Vision AI] 단일 객체를 리스트로 변환")
-            parsed_data = [parsed_data]
-            
-        print(f"[Vision AI] DataFrame 생성 중...")
-        extracted_rows = []
-        for idx, data in enumerate(parsed_data):
-            row = {col: "" for col in default_columns}
-            for key, value in data.items():
-                if key in row:
-                    row[key] = value
-            row["AI_심층분석"] = data.get("AI_심층분석", "")
-
-            auto_summary = build_structured_case_summary(row)
-            row["권리요약"] = auto_summary["자동정리요약"]
-            row["담당자메모"] = build_case_briefing(row)
-            row["심사상태"] = auto_summary["정리상태"]
-            extracted_rows.append(row)
-            print(f"[Vision AI]   - 행 {idx+1}: 사건번호={data.get('사건번호', '미상')}, 파일명={data.get('원본파일명', '')}")
+            rows = _to_rows(parsed_data, img_file.name, default_columns)
+            extracted_rows.extend(rows)
+            print(f"[Vision AI]   - 이미지 완료: {img_file.name}, 생성 행 수={len(rows)}")
 
         result_df = pd.DataFrame(extracted_rows)
         print(f"[Vision AI] ✅ 최종 DataFrame 생성 완료: {len(result_df)}행 x {len(result_df.columns)}열")
