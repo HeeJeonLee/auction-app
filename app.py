@@ -847,10 +847,10 @@ with flow_col3:
 with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expanded=False):
     manual_100p_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_path = Path(__file__).resolve().parent / "docs" / "04_권리분석_실무와_경매_취하_유도_프로세스.md"
-    manual_mvp_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_초안_v1.md"
+    manual_mvp_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_검수본_v2.md"
     manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
-    manual_mvp_name = "05_MVP_권리분석32p_취하18p_초안_v1.md"
+    manual_mvp_name = "05_MVP_권리분석32p_취하18p_검수본_v2.md"
 
     manual_100p_text = ""
     manual_process_text = ""
