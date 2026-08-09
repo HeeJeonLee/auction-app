@@ -919,8 +919,11 @@ def _process_images_with_local_hybrid(
         )
 
     rows: list[dict[str, Any]] = []
+    run_started = time.perf_counter()
     bulk_mode = len(image_files) >= 40
     tesseract_retry_count = 0
+    tesseract_retry_attempts = 0
+    tesseract_retry_used = 0
     tesseract_retry_limit = max(12, len(image_files) // 3)
     if speed_profile == "fast":
         tesseract_retry_limit = max(6, len(image_files) // 5)
@@ -956,6 +959,7 @@ def _process_images_with_local_hybrid(
                 bulk_mode=bulk_mode,
             )
         ):
+            tesseract_retry_attempts += 1
             tesseract_res = _run_tesseract_ocr_text(variants)
             tess_row = _build_best_row_from_ocr_candidates(
                 tesseract_res.get("candidates", []),
@@ -969,6 +973,7 @@ def _process_images_with_local_hybrid(
             if _core_field_score(merged_row) >= _core_field_score(paddle_row):
                 final_row = merged_row
                 tesseract_used = True
+                tesseract_retry_used += 1
             tesseract_retry_count += 1
 
         auto_summary = build_structured_case_summary(final_row)
@@ -983,7 +988,24 @@ def _process_images_with_local_hybrid(
         rows.append(final_row)
 
     merged_rows = _merge_extracted_rows(rows, default_columns)
-    return pd.DataFrame(merged_rows)
+    result_df = pd.DataFrame(merged_rows)
+
+    elapsed_ms = (time.perf_counter() - run_started) * 1000.0
+    image_count = max(1, len(image_files))
+    result_df.attrs["ocr_stats"] = {
+        "engine": "local_hybrid",
+        "speed_profile": speed_profile,
+        "bulk_mode": bulk_mode,
+        "images": len(image_files),
+        "elapsed_ms": elapsed_ms,
+        "avg_ms_per_image": elapsed_ms / image_count,
+        "tesseract_retry_limit": tesseract_retry_limit,
+        "tesseract_retry_attempts": tesseract_retry_attempts,
+        "tesseract_retry_used": tesseract_retry_used,
+        "tesseract_retry_rate": (tesseract_retry_attempts / image_count) * 100.0,
+        "tesseract_used_rate": (tesseract_retry_used / image_count) * 100.0,
+    }
+    return result_df
 
 
 def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) -> pd.DataFrame:

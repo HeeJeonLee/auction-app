@@ -2,6 +2,7 @@ import os
 import time
 import hashlib
 import zipfile
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -457,6 +458,49 @@ def build_manual_zip_bundle(manual_name: str, manual_text: str, process_name: st
     return buffer.getvalue()
 
 
+@st.cache_data(show_spinner=False)
+def load_rule_source_map(path_value: str) -> dict[str, dict[str, str]]:
+    path_obj = Path(path_value)
+    if not path_obj.exists():
+        return {}
+    try:
+        import json
+
+        payload = json.loads(path_obj.read_text(encoding="utf-8"))
+        result: dict[str, dict[str, str]] = {}
+        for rule in list(payload.get("rules") or []):
+            rid = str(rule.get("id") or "").strip()
+            if not rid:
+                continue
+            result[rid] = {
+                "source": str(rule.get("source") or "manual"),
+                "recommendation": str(rule.get("recommendation") or ""),
+            }
+        return result
+    except Exception:
+        return {}
+
+
+@st.cache_data(show_spinner=False)
+def load_manual_page_title_map(path_value: str) -> dict[str, str]:
+    path_obj = Path(path_value)
+    if not path_obj.exists():
+        return {}
+    result: dict[str, str] = {}
+    try:
+        text = path_obj.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            match = re.match(r"^##\s+p(\d{2})\.\s*(.+)$", line.strip())
+            if not match:
+                continue
+            page_no = f"p{match.group(1)}"
+            title = str(match.group(2) or "").strip()
+            result[page_no] = title
+    except Exception:
+        return {}
+    return result
+
+
 # API Key 관리
 if "api_key" not in st.session_state:
     st.session_state.api_key = resolve_api_key()
@@ -558,6 +602,19 @@ def _split_pipe_values(raw_value: str, limit: int = 6) -> list[str]:
     return items[:limit]
 
 
+def _safe_days_value(raw_value: object) -> int:
+    text = str(raw_value or "").strip()
+    if not text:
+        return 9999
+    matched = re.search(r"-?\d+", text)
+    if not matched:
+        return 9999
+    try:
+        return int(matched.group(0))
+    except Exception:
+        return 9999
+
+
 def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None:
     if frame.empty:
         return
@@ -565,7 +622,17 @@ def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None
     st.markdown("### 🧩 규칙 실행 결과 요약 카드")
     st.caption("실패 규칙 ID, 권고문, 취하 스크립트를 사건 단위로 빠르게 확인할 수 있습니다.")
 
-    preview_rows = frame.head(max_cards)
+    rulepack_path = Path(__file__).resolve().parent / "data" / "manual_rules_mvp_v1.json"
+    manual_path = Path(__file__).resolve().parent / "docs" / "05_MVP_권리분석32p_취하18p_초안_v1.md"
+    source_map = load_rule_source_map(str(rulepack_path))
+    page_title_map = load_manual_page_title_map(str(manual_path))
+
+    sorted_frame = frame.copy()
+    sorted_frame["_rule_score_num"] = pd.to_numeric(sorted_frame.get("규칙점수", ""), errors="coerce").fillna(-1)
+    sorted_frame["_days_left_num"] = sorted_frame.get("잔여일수", "").map(_safe_days_value)
+    sorted_frame = sorted_frame.sort_values(by=["_rule_score_num", "_days_left_num"], ascending=[True, True])
+    preview_rows = sorted_frame.head(max_cards)
+
     for _, row in preview_rows.iterrows():
         row_dict = row.to_dict()
         case_no = str(row.get("사건번호") or "미상")
@@ -599,7 +666,28 @@ def render_rule_execution_cards(frame: pd.DataFrame, max_cards: int = 8) -> None
 
             st.markdown("**실패 규칙 ID/근거 요약**")
             if failed_ids:
-                st.write(" · ".join([str(x) for x in failed_ids]))
+                for rid in failed_ids:
+                    rid_text = str(rid)
+                    src_info = source_map.get(rid_text, {})
+                    src = str(src_info.get("source") or "")
+                    rec = str(src_info.get("recommendation") or "")
+
+                    page_hint = ""
+                    page_match = re.search(r"p\d{2}", src)
+                    if page_match:
+                        page_key = page_match.group(0)
+                        page_title = page_title_map.get(page_key, "")
+                        if page_title:
+                            page_hint = f" / {page_key} {page_title}"
+                        else:
+                            page_hint = f" / {page_key}"
+
+                    line = f"- {rid_text}"
+                    if src:
+                        line += f" -> {src}{page_hint}"
+                    st.write(line)
+                    if rec:
+                        st.caption(f"권고: {rec}")
             else:
                 st.write("없음")
 
@@ -1052,6 +1140,24 @@ elif analyze_clicked and uploaded_files:
                                 st.caption(
                                     "핵심 필드 채움률: "
                                     + ", ".join([f"{k} {v:.0f}%" for k, v in fill_map.items()])
+                                )
+                        except Exception:
+                            pass
+                        try:
+                            ocr_stats = dict(getattr(vision_df, "attrs", {}).get("ocr_stats") or {})
+                            if ocr_stats:
+                                st.info(
+                                    "고속 처리 통계: "
+                                    f"속도모드={ocr_stats.get('speed_profile', '-')}, "
+                                    f"평균처리={ocr_stats.get('avg_ms_per_image', 0):.0f}ms/장, "
+                                    f"재시도율={ocr_stats.get('tesseract_retry_rate', 0.0):.1f}%, "
+                                    f"재시도실사용율={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%"
+                                )
+                                st.session_state.processing_log.append(
+                                    "✓ OCR 런타임 통계 "
+                                    f"(avg_ms={ocr_stats.get('avg_ms_per_image', 0):.0f}, "
+                                    f"retry_rate={ocr_stats.get('tesseract_retry_rate', 0.0):.1f}%, "
+                                    f"used_rate={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%)"
                                 )
                         except Exception:
                             pass
