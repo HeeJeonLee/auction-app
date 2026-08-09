@@ -951,17 +951,25 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
         )
         if enable_mvp_preview:
             section_map = split_manual_sections(manual_mvp_text)
-            section_keys = sorted(section_map.keys())
-            if section_keys:
-                selected_section = st.selectbox(
-                    "검수 페이지 선택",
-                    options=section_keys,
-                    index=0,
-                    key="mvp_section_selector",
-                )
-                st.markdown(section_map.get(selected_section, ""))
+            p01_text = section_map.get("p01", "")
+            if p01_text:
+                st.markdown("#### 현재 검수 대상: p01")
+                st.markdown(p01_text)
             else:
                 st.markdown(manual_mvp_text)
+
+            with st.expander("다른 페이지 검토", expanded=False):
+                section_keys = [key for key in sorted(section_map.keys()) if key != "p01"]
+                if section_keys:
+                    selected_section = st.selectbox(
+                        "검토할 다른 페이지 선택",
+                        options=section_keys,
+                        index=0,
+                        key="mvp_section_selector",
+                    )
+                    st.markdown(section_map.get(selected_section, ""))
+                else:
+                    st.caption("다른 페이지를 불러올 수 없습니다.")
     else:
         st.warning("MVP 50p 파일을 읽지 못했습니다. docs 경로를 확인해 주세요.")
 
