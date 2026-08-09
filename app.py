@@ -1,10 +1,16 @@
 import os
 import time
+import hashlib
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+try:
+    from streamlit_paste_button import paste_image_button
+except Exception:  # pragma: no cover - optional dependency
+    paste_image_button = None
 
 try:
     from dotenv import load_dotenv
@@ -306,6 +312,55 @@ if "uploaded_images" not in st.session_state:
     st.session_state.uploaded_images = []
 if "processing_log" not in st.session_state:
     st.session_state.processing_log = []
+if "clipboard_images" not in st.session_state:
+    st.session_state.clipboard_images = []
+if "clipboard_hashes" not in st.session_state:
+    st.session_state.clipboard_hashes = set()
+
+
+class ClipboardImageUpload:
+    """file_uploader 객체와 유사한 최소 인터페이스를 제공한다."""
+
+    def __init__(self, image_bytes: bytes, name: str):
+        self._image_bytes = image_bytes
+        self.name = name
+        self.type = "image/png"
+
+    def getvalue(self) -> bytes:
+        return self._image_bytes
+
+
+def build_clipboard_upload(paste_result, index_hint: int):
+    """클립보드 컴포넌트 결과를 업로드 객체로 변환한다."""
+    if paste_result is None:
+        return None
+
+    image_data = paste_result
+    if isinstance(paste_result, dict):
+        image_data = (
+            paste_result.get("image_data")
+            or paste_result.get("image")
+            or paste_result.get("data")
+        )
+
+    image_bytes = None
+    if isinstance(image_data, (bytes, bytearray)):
+        image_bytes = bytes(image_data)
+    elif hasattr(image_data, "save"):
+        buffer = BytesIO()
+        image_data.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+
+    if not image_bytes:
+        return None
+
+    image_hash = hashlib.sha1(image_bytes).hexdigest()
+    if image_hash in st.session_state.clipboard_hashes:
+        return None
+
+    st.session_state.clipboard_hashes.add(image_hash)
+    file_name = f"clipboard_capture_{index_hint:03d}.png"
+    return ClipboardImageUpload(image_bytes=image_bytes, name=file_name)
 
 
 def is_image_upload(file_obj) -> bool:
@@ -532,6 +587,32 @@ capture_files = st.file_uploader(
     help="이 영역에 캡처 이미지를 드래그 앤 드롭하세요.",
 )
 
+st.caption("붙여넣기는 드래그와 다릅니다. 아래 버튼/영역에서 Ctrl+V(Cmd+V)로 클립보드 이미지를 직접 추가할 수 있습니다.")
+if paste_image_button is None:
+    st.info("클립보드 붙여넣기 컴포넌트 로딩 전입니다. 배포 환경에서 자동 설치 후 활성화됩니다.")
+else:
+    paste_result = paste_image_button(
+        label="📋 클립보드 이미지 붙여넣기 (Ctrl+V / Cmd+V)",
+        key="clipboard_capture_paste",
+    )
+    new_clipboard_file = build_clipboard_upload(
+        paste_result,
+        index_hint=len(st.session_state.clipboard_images) + 1,
+    )
+    if new_clipboard_file is not None:
+        st.session_state.clipboard_images.append(new_clipboard_file)
+        st.success(f"클립보드 이미지 추가 완료: {new_clipboard_file.name}")
+
+if st.session_state.clipboard_images:
+    clip_cols = st.columns([3, 1])
+    with clip_cols[0]:
+        st.caption(f"클립보드 이미지 {len(st.session_state.clipboard_images)}장 대기 중")
+    with clip_cols[1]:
+        if st.button("클립보드 이미지 비우기", key="clear_clipboard_images"):
+            st.session_state.clipboard_images = []
+            st.session_state.clipboard_hashes = set()
+            st.rerun()
+
 data_files = st.file_uploader(
     "📊 데이터 파일 업로드 (CSV/XLSX)",
     type=["xlsx", "csv"],
@@ -543,6 +624,8 @@ data_files = st.file_uploader(
 uploaded_files = []
 if capture_files:
     uploaded_files.extend(capture_files)
+if st.session_state.clipboard_images:
+    uploaded_files.extend(st.session_state.clipboard_images)
 if data_files:
     uploaded_files.extend(data_files)
 
@@ -623,7 +706,8 @@ if uploaded_files:
                 try:
                     quality = assess_image_quality(uploaded_file.getvalue())
                     with quality_cols[idx % len(quality_cols)]:
-                        st.image(uploaded_file, use_container_width=True)
+                        preview_image = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file
+                        st.image(preview_image, use_container_width=True)
                         profile_name = {
                             "mobile_long": "긴 모바일 캡처",
                             "table_dense": "표 밀집 문서",
