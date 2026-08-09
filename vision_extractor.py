@@ -1,6 +1,7 @@
 import os
 import json
 import io
+import time
 import warnings
 from typing import List, Any
 
@@ -150,6 +151,39 @@ def build_case_briefing(row: dict[str, Any]) -> str:
     )
 
 
+def _is_rate_limited_error(error: Exception) -> bool:
+    message = str(error).lower()
+    tokens = [
+        "rate_limit_exceeded",
+        "quota exceeded",
+        "quota exceeded for quota metric",
+        "resource_exhausted",
+        "429",
+    ]
+    return any(token in message for token in tokens)
+
+
+def _build_quota_fallback_dataframe(image_files: List[Any], default_columns: List[str], detail: str) -> pd.DataFrame:
+    """Gemini 호출 한도 초과 시 분석 중단 없이 보류 데이터로 반환한다."""
+    extracted_rows = []
+    for img in image_files:
+        row = {col: "" for col in default_columns}
+        row["원본파일명"] = getattr(img, "name", "미상")
+        row["사건번호"] = "AI쿼터대기"
+        row["AI_심층분석"] = detail
+        row["담당자메모"] = (
+            "▶ Gemini 분당 요청 한도 초과로 자동 판독이 일시 보류되었습니다. "
+            "1~2분 후 다시 실행하거나 CSV/XLSX 업로드로 먼저 심사를 진행해 주세요."
+        )
+        row["심사상태"] = "보완필요(쿼터초과)"
+
+        auto_summary = build_structured_case_summary(row)
+        row["권리요약"] = auto_summary["자동정리요약"]
+        extracted_rows.append(row)
+
+    return pd.DataFrame(extracted_rows)
+
+
 def process_images_to_dataframe(api_key: str, image_files: List[Any], default_columns: List[str]) -> pd.DataFrame:
     """
     최고위 전문가용: 여러 장의 이미지를 파싱하고, 무조건 1개 이상의 데이터를 반환하도록 강제합니다.
@@ -160,6 +194,8 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
     """
     if not api_key:
         raise ValueError("❌ Gemini API 키가 필요합니다. https://makersuite.google.com/app/apikey 에서 발급받으세요.")
+    if genai is None:
+        raise RuntimeError("❌ google-generativeai 패키지가 설치되지 않았습니다. requirements.txt 설치 후 다시 실행해 주세요.")
     
     print(f"[Vision AI] API 키 설정 중... (키 길이: {len(api_key)}자)")
     genai.configure(api_key=api_key)
@@ -257,10 +293,36 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
         image_parts.append(f"\n\n[이미지 파일명: {img_file.name}]\n위 이미지를 분석하여 '원본파일명' 필드에 '{img_file.name}'을 반드시 포함하십시오.\n\n")
 
     print(f"[Vision AI] Google Gemini API 호출 중...")
+    request_payload = [prompt] + image_parts
+    attempt_delays = [0, 8, 20]
+    response_text = ""
+
     try:
-        response = model.generate_content([prompt] + image_parts)
-        print(f"[Vision AI] ✓ API 응답 수신 완료 (응답 길이: {len(response.text)}자)")
-        result_text = response.text.replace("```json", "").replace("```", "").strip()
+        for attempt, delay in enumerate(attempt_delays, start=1):
+            if delay > 0:
+                print(f"[Vision AI] 호출 제한 회피를 위해 {delay}초 대기 후 재시도합니다... ({attempt}/{len(attempt_delays)})")
+                time.sleep(delay)
+
+            try:
+                response = model.generate_content(request_payload)
+                response_text = str(getattr(response, "text", "") or "").strip()
+                if not response_text:
+                    raise ValueError("AI 응답이 비어 있습니다.")
+                print(f"[Vision AI] ✓ API 응답 수신 완료 (응답 길이: {len(response_text)}자)")
+                break
+            except Exception as api_error:
+                if _is_rate_limited_error(api_error):
+                    print(f"[Vision AI] ⚠️ Rate limit 감지: {api_error}")
+                    if attempt == len(attempt_delays):
+                        return _build_quota_fallback_dataframe(
+                            image_files,
+                            default_columns,
+                            "[보류] Gemini API 분당 호출 한도(429 RATE_LIMIT_EXCEEDED)로 자동 판독이 지연되었습니다.",
+                        )
+                    continue
+                raise
+
+        result_text = response_text.replace("```json", "").replace("```", "").strip()
         print(f"[Vision AI] 클린업된 JSON 텍스트:")
         print(result_text[:500])  # 처음 500자만 출력
         
@@ -314,4 +376,13 @@ def process_images_to_dataframe(api_key: str, image_files: List[Any], default_co
         import traceback
         print(f"[Vision AI] 상세 스택:")
         traceback.print_exc()
-        raise Exception(f"❌ AI 심층 구조화 파싱 실패: {e}\n\n가능한 원인:\n1. API 키가 만료되었거나 잘못됨\n2. 네트워크 연결 문제\n3. 이미지 파일이 손상됨\n4. API 할당량 초과")
+        short_reason = str(e)
+        if len(short_reason) > 280:
+            short_reason = short_reason[:280] + "..."
+        raise Exception(
+            f"❌ AI 심층 구조화 파싱 실패: {short_reason}\n\n가능한 원인:\n"
+            "1. API 키가 만료되었거나 잘못됨\n"
+            "2. 네트워크 연결 문제\n"
+            "3. 이미지 파일이 손상됨\n"
+            "4. API 할당량 초과"
+        )

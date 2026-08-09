@@ -536,10 +536,20 @@ if st.button("🚀 AI 심층 분석 시작", type="primary", use_container_width
             try:
                 st.session_state.processing_log.append(f"🤖 Google Gemini AI 시작...")
                 vision_df = process_images_to_dataframe(st.session_state.api_key, image_files, DEFAULT_COLUMNS)
-                st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
+                is_quota_hold = (
+                    not vision_df.empty
+                    and "사건번호" in vision_df.columns
+                    and vision_df["사건번호"].astype(str).eq("AI쿼터대기").all()
+                )
+                if is_quota_hold:
+                    st.warning("⚠️ Gemini 호출 한도(429)로 이미지 자동 판독이 일시 보류되었습니다. 1~2분 후 다시 시도해 주세요.")
+                    st.session_state.processing_log.append("⚠️ API 호출 한도 초과 - 이미지 자동 판독 보류 데이터로 처리")
+                else:
+                    st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
                 excel_dfs.append(vision_df)
             except Exception as e:
-                st.error(f"❌ AI 분석 오류: {e}")
+                st.error("❌ AI 분석 오류: AI 호출이 일시 실패했습니다. 잠시 후 다시 시도하거나 CSV/XLSX 업로드로 진행해 주세요.")
+                st.caption(f"상세: {str(e)[:220]}")
                 st.session_state.processing_log.append(f"✗ AI 오류: {str(e)}")
         else:
             st.warning("⚠️ API 키가 없어 이미지 분석을 건너뜁니다")

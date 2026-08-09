@@ -8,6 +8,7 @@ from vision_extractor import (
     assess_image_quality,
     build_recapture_guidance,
     detect_missing_fields,
+    process_images_to_dataframe,
 )
 
 
@@ -81,3 +82,40 @@ def test_assess_image_quality_does_not_emit_deprecation_warning():
         assess_image_quality(buffer.getvalue())
 
     assert not any("getdata" in str(w.message) for w in caught)
+
+
+class _DummyUpload:
+    def __init__(self, name: str, data: bytes):
+        self.name = name
+        self._data = data
+
+    def getvalue(self):
+        return self._data
+
+
+def test_process_images_to_dataframe_returns_quota_hold_rows_on_429(monkeypatch):
+    class _DummyModel:
+        def generate_content(self, _payload):
+            raise Exception("429 RATE_LIMIT_EXCEEDED quota exceeded")
+
+    class _DummyGenAI:
+        def configure(self, **_kwargs):
+            return None
+
+        def GenerativeModel(self, _name):
+            return _DummyModel()
+
+    monkeypatch.setattr("vision_extractor.genai", _DummyGenAI())
+    monkeypatch.setattr("vision_extractor.time.sleep", lambda _sec: None)
+
+    img = Image.new("RGB", (200, 200), color=(255, 255, 255))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    file_obj = _DummyUpload("sample.png", buffer.getvalue())
+
+    default_columns = ["원본파일명", "사건번호", "권리요약", "AI_심층분석", "담당자메모", "심사상태"]
+    df = process_images_to_dataframe("dummy_key", [file_obj], default_columns)
+
+    assert len(df) == 1
+    assert df.iloc[0]["사건번호"] == "AI쿼터대기"
+    assert "보류" in str(df.iloc[0]["AI_심층분석"])
