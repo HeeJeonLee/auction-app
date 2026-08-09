@@ -23,6 +23,7 @@ from analysis import (
 )
 from vision_extractor import (
     process_images_to_dataframe,
+    parse_captured_text_to_dataframe,
     build_structured_case_summary,
     build_case_briefing,
     assess_image_quality,
@@ -500,6 +501,21 @@ ocr_mode_label = st.selectbox(
     help="텍스트 우선 모드는 표/문장 인식에 집중하기 위해 캡처를 분할·고대비 처리합니다."
 )
 ocr_mode = "text_first" if "텍스트 우선" in ocr_mode_label else "balanced"
+
+with st.expander("🛟 429 우회: 캡처 텍스트 직접 붙여넣기", expanded=False):
+    pasted_text = st.text_area(
+        "탱크옥션/KB 화면에서 텍스트를 복사해 붙여넣으세요",
+        height=180,
+        placeholder="예: 경매 2024타경2979 ... 감정가격 796,000,000 ... 최저가격 509,440,000 ..."
+    )
+    if st.button("📝 붙여넣은 텍스트 바로 분석", key="parse_text_direct", use_container_width=True):
+        if not pasted_text.strip():
+            st.warning("텍스트를 먼저 붙여넣어 주세요.")
+        else:
+            text_df = parse_captured_text_to_dataframe(pasted_text, DEFAULT_COLUMNS)
+            st.session_state.df = enrich_dataframe(text_df)
+            st.session_state.uploaded_images = []
+            st.success("✅ 텍스트 직접 분석이 완료되었습니다. 아래 대시보드에서 결과를 확인하세요.")
 
 if uploaded_files:
     st.markdown("#### 📸 업로드된 캡처본 품질 미리보기")

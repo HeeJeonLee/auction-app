@@ -9,6 +9,7 @@ from vision_extractor import (
     build_recapture_guidance,
     detect_missing_fields,
     process_images_to_dataframe,
+    parse_captured_text_to_dataframe,
     _merge_extracted_rows,
     _build_image_parts_for_mode,
     _normalize_extracted_row,
@@ -218,3 +219,32 @@ def test_registry_entries_enrich_flags_and_debt():
     assert row["압류여부"] == "예"
     assert "유더블유" in row["주요채권자"] or "우리은행" in row["주요채권자"]
     assert int(float(str(row["부채총액"] or "0"))) >= 202774869
+
+
+def test_parse_captured_text_to_dataframe_extracts_core_fields():
+    text = """
+    경매 2024타경2979
+    서울 강동구 천호동 52-17 (천호동,태천해오름아파트)
+    감정가격 796,000,000
+    최저가격 (64%) 509,440,000
+    청구 202,774,869
+    채권자 유더블유제십오차유동화전문유한회사
+    근저당권설정 240,000,000
+    압류 국민건강보험공단
+    """
+
+    default_columns = [
+        "원본파일명", "사건번호", "주소", "아파트명", "감정가", "최저매각가격", "낙찰예상가",
+        "부채총액", "주요채권자", "근저당여부", "압류여부", "권리요약", "담당자메모", "심사상태", "AI_심층분석"
+    ]
+
+    df = parse_captured_text_to_dataframe(text, default_columns)
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["사건번호"] == "2024타경2979"
+    assert str(row["감정가"]) == "796000000"
+    assert str(row["최저매각가격"]) == "509440000"
+    assert str(row["부채총액"]) == "202774869"
+    assert "유더블유" in str(row["주요채권자"])
+    assert row["근저당여부"] == "예"
+    assert row["압류여부"] == "예"

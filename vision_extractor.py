@@ -450,6 +450,78 @@ def _apply_registry_entries(row: dict[str, Any], data: dict[str, Any]) -> dict[s
     return enriched
 
 
+def _extract_first(pattern: str, text: str, flags: int = 0) -> str:
+    m = re.search(pattern, text, flags)
+    return m.group(1).strip() if m else ""
+
+
+def parse_captured_text_to_dataframe(raw_text: str, default_columns: List[str]) -> pd.DataFrame:
+    """Gemini 없이 캡처에서 복사한 텍스트를 직접 구조화한다.
+
+    429 한도 초과 시 사용자 우회 경로로 사용한다.
+    """
+    text = str(raw_text or "").strip()
+    row = {col: "" for col in default_columns}
+
+    if not text:
+        return pd.DataFrame([row])
+
+    case_no = _extract_first(r"(\d{4}\s*타경\s*\d{2,10})", text)
+    appraisal = _extract_first(r"감정가격\s*([0-9,]+)", text)
+    min_price = _extract_first(r"최저가격\s*(?:\(\d+%\)\s*)?([0-9,]+)", text)
+    claim = _extract_first(r"청구[:\s]*([0-9,]+)", text)
+    bid_date = _extract_first(r"입찰\s*(\d{4}\.\d{2}\.\d{2})", text)
+    creditor = _extract_first(r"채권자\s*([^\n\r]+)", text)
+
+    addr = _extract_first(r"((?:서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주)[^\n\r]{6,80})", text)
+    apt = _extract_first(r"\((?:[^\)]*?,)?\s*([^\)\n\r]*아파트)\)", text)
+
+    kb_general_manwon = _extract_first(r"일반평균\s*([0-9,]+)", text)
+    kb_price = ""
+    if kb_general_manwon:
+        try:
+            kb_price = str(int(kb_general_manwon.replace(",", "")) * 10_000)
+        except Exception:
+            kb_price = kb_general_manwon
+
+    row["사건번호"] = case_no
+    row["감정가"] = appraisal.replace(",", "") if appraisal else ""
+    row["최저매각가격"] = min_price.replace(",", "") if min_price else ""
+    row["낙찰예상가"] = min_price.replace(",", "") if min_price else ""
+    row["부채총액"] = claim.replace(",", "") if claim else ""
+    row["매각기일"] = bid_date
+    row["주소"] = addr
+    row["아파트명"] = apt
+    row["KB시세"] = kb_price
+    row["주요채권자"] = creditor
+    row["원본파일명"] = "TEXT_INPUT"
+
+    text_compact = text.replace(" ", "")
+    if "근저당" in text_compact:
+        row["근저당여부"] = "예"
+    if "가압류" in text_compact:
+        row["가압류여부"] = "예"
+    if "가처분" in text_compact:
+        row["가처분여부"] = "예"
+    if "압류" in text_compact and "가압류" not in text_compact:
+        row["압류여부"] = "예"
+    if "임차" in text_compact:
+        row["임차권등기여부"] = "예"
+    if "전세권" in text_compact:
+        row["전세권여부"] = "예"
+    if "가등기" in text_compact:
+        row["가등기여부"] = "예"
+
+    row = _normalize_extracted_row(row)
+    auto_summary = build_structured_case_summary(row)
+    row["권리요약"] = auto_summary["자동정리요약"]
+    row["담당자메모"] = build_case_briefing(row)
+    row["심사상태"] = auto_summary["정리상태"]
+    row["AI_심층분석"] = "[텍스트직접분석] Gemini 호출 없이 붙여넣은 텍스트를 구조화했습니다."
+
+    return pd.DataFrame([row])
+
+
 def _group_case_key(row: dict[str, Any]) -> str:
     case_no = _normalize_case_number(row.get("사건번호"))
     if case_no and case_no not in {"판독불가", "정보없음", "AI쿼터대기", "미상"}:
