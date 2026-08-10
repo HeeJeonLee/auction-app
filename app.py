@@ -876,6 +876,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_p10_path = Path(__file__).resolve().parent / "docs" / "10_p10_권리리스크개수상한_검수표_v1.md"
     manual_p11_path = Path(__file__).resolve().parent / "docs" / "11_p11_매각기일잔여일수신뢰성_검수표_v1.md"
     manual_p12_path = Path(__file__).resolve().parent / "docs" / "12_p12_물건번호사건번호연결검증_검수표_v1.md"
+    manual_p13_path = Path(__file__).resolve().parent / "docs" / "13_p13_권리요약생성품질검증_검수표_v1.md"
     manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
     manual_mvp_name = "05_MVP_권리분석32p_취하18p_검수본_v2.md"
@@ -891,6 +892,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_p10_name = "10_p10_권리리스크개수상한_검수표_v1.md"
     manual_p11_name = "11_p11_매각기일잔여일수신뢰성_검수표_v1.md"
     manual_p12_name = "12_p12_물건번호사건번호연결검증_검수표_v1.md"
+    manual_p13_name = "13_p13_권리요약생성품질검증_검수표_v1.md"
 
     manual_100p_text = ""
     manual_process_text = ""
@@ -907,6 +909,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_p10_text = ""
     manual_p11_text = ""
     manual_p12_text = ""
+    manual_p13_text = ""
     try:
         manual_100p_text = read_utf8_text_file(
             str(manual_100p_path),
@@ -967,6 +970,10 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
         manual_p12_text = read_utf8_text_file(
             str(manual_p12_path),
             manual_p12_path.stat().st_mtime if manual_p12_path.exists() else 0.0,
+        )
+        manual_p13_text = read_utf8_text_file(
+            str(manual_p13_path),
+            manual_p13_path.stat().st_mtime if manual_p13_path.exists() else 0.0,
         )
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
@@ -1317,6 +1324,27 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                     use_container_width=True,
                 )
             st.markdown(manual_p12_text)
+
+    if manual_p13_text:
+        with st.expander("다음 검수 페이지: p13 권리요약 생성 품질 검증", expanded=False):
+            p13_col1, p13_col2 = st.columns(2)
+            with p13_col1:
+                st.download_button(
+                    "📥 p13 검수표 다운로드 (MD)",
+                    data=manual_p13_text,
+                    file_name=manual_p13_name,
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            with p13_col2:
+                st.download_button(
+                    "📥 p13 검수표 다운로드 (TXT)",
+                    data=manual_p13_text,
+                    file_name=manual_p13_name.replace(".md", ".txt"),
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            st.markdown(manual_p13_text)
 
 col_api1, col_api2 = st.columns([3, 1])
 with col_api1:
