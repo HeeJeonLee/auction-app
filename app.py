@@ -486,6 +486,73 @@ def _render_verification_panel(frame: pd.DataFrame, image_map: dict[str, bytes])
         st.info(str(row.get("취하스크립트") or "생성 없음"))
 
 
+def _is_local_ocr_unavailable_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "로컬 ocr 엔진을 찾지 못했습니다" in text
+        or "paddleocr" in text
+        or "tesseract" in text
+        or "opencv" in text
+    )
+
+
+def _run_ocr_with_fallback(
+    api_key: str,
+    image_files: list,
+    default_columns: list[str],
+    mode: str,
+    engine: str,
+    speed_profile: str,
+) -> tuple[pd.DataFrame, list[str], str]:
+    """OCR 실행 후 필요 시 자동 폴백을 적용한다.
+
+    Returns:
+        (vision_df, logs, used_engine)
+    """
+    logs: list[str] = []
+    used_engine = engine
+
+    try:
+        vision_df = process_images_to_dataframe(
+            api_key,
+            image_files,
+            default_columns,
+            mode=mode,
+            engine=engine,
+            speed_profile=speed_profile,
+        )
+    except Exception as first_error:
+        if _is_local_ocr_unavailable_error(first_error) and str(api_key or "").strip() and engine in {"auto", "local_hybrid"}:
+            logs.append("⚠️ 로컬 OCR 엔진이 배포환경에서 동작하지 않아 Gemini Vision으로 자동 전환합니다.")
+            used_engine = "gemini"
+            vision_df = process_images_to_dataframe(
+                api_key,
+                image_files,
+                default_columns,
+                mode=mode,
+                engine="gemini",
+                speed_profile=speed_profile,
+            )
+        else:
+            raise
+
+    if (vision_df is None or vision_df.empty) and str(api_key or "").strip() and used_engine in {"auto", "local_hybrid"}:
+        logs.append("⚠️ 로컬 OCR 결과가 비어 Gemini Vision으로 1회 재시도합니다.")
+        used_engine = "gemini"
+        retry_df = process_images_to_dataframe(
+            api_key,
+            image_files,
+            default_columns,
+            mode=mode,
+            engine="gemini",
+            speed_profile=speed_profile,
+        )
+        if retry_df is not None and not retry_df.empty:
+            vision_df = retry_df
+
+    return vision_df, logs, used_engine
+
+
 def is_image_upload(file_obj) -> bool:
     """업로드 객체의 MIME/확장자를 함께 확인해 이미지 여부를 안전하게 판별한다."""
     mime_type = str(getattr(file_obj, "type", "") or "").lower()
@@ -2781,7 +2848,7 @@ elif analyze_clicked and uploaded_files:
                     else:
                         st.session_state.processing_log.append("🤖/🆓 자동 엔진 선택 실행...")
 
-                    vision_df = process_images_to_dataframe(
+                    vision_df, fallback_logs, used_engine = _run_ocr_with_fallback(
                         st.session_state.api_key,
                         image_files,
                         DEFAULT_COLUMNS,
@@ -2789,6 +2856,10 @@ elif analyze_clicked and uploaded_files:
                         engine=ocr_engine,
                         speed_profile=ocr_speed_profile,
                     )
+                    for log_msg in fallback_logs:
+                        st.warning(log_msg)
+                        st.session_state.processing_log.append(log_msg)
+
                     is_quota_hold = (
                         not vision_df.empty
                         and "사건번호" in vision_df.columns
@@ -2799,6 +2870,8 @@ elif analyze_clicked and uploaded_files:
                         st.session_state.processing_log.append("⚠️ API 호출 한도 초과 - 이미지 자동 판독 보류 데이터로 처리")
                     else:
                         st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
+                        if used_engine == "gemini" and ocr_engine in {"auto", "local_hybrid"}:
+                            st.info("로컬 OCR 인식이 낮아 Gemini Vision 결과를 우선 적용했습니다.")
                         try:
                             quality_summary = summarize_extraction_quality(vision_df)
                             st.session_state.processing_log.append(
@@ -2834,7 +2907,11 @@ elif analyze_clicked and uploaded_files:
                             pass
                     excel_dfs.append(vision_df)
                 except Exception as e:
-                    st.error("❌ AI 분석 오류: AI 호출이 일시 실패했습니다. 잠시 후 다시 시도하거나 CSV/XLSX 업로드로 진행해 주세요.")
+                    if _is_local_ocr_unavailable_error(e) and not str(st.session_state.api_key or "").strip():
+                        st.error("❌ 캡처 OCR 엔진이 현재 환경에서 동작하지 않습니다. Gemini API 키를 입력하면 자동 분석이 가능합니다.")
+                        st.info("대안: 상단의 '429 우회: 캡처 텍스트 직접 붙여넣기'로 즉시 분석할 수 있습니다.")
+                    else:
+                        st.error("❌ AI 분석 오류: AI 호출이 일시 실패했습니다. 잠시 후 다시 시도하거나 CSV/XLSX 업로드로 진행해 주세요.")
                     st.caption(f"상세: {str(e)[:220]}")
                     st.session_state.processing_log.append(f"✗ AI 오류: {str(e)}")
             else:
