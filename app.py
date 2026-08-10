@@ -1194,6 +1194,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                 data=manual_mvp_text,
                 file_name=manual_mvp_name,
                 mime="text/markdown",
+                key="manual_mvp_download_md",
                 use_container_width=True,
             )
             st.markdown(manual_mvp_text[:12000])
@@ -1204,6 +1205,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                 data=manual_100p_text,
                 file_name=manual_100p_name,
                 mime="text/markdown",
+                key="manual_100p_download_md_overview",
                 use_container_width=True,
             )
 
@@ -1213,6 +1215,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                 data=manual_process_text,
                 file_name=manual_process_name,
                 mime="text/markdown",
+                key="manual_process_download_md_overview",
                 use_container_width=True,
             )
 
@@ -1233,6 +1236,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                         data=manual_100p_text,
                         file_name=manual_100p_name,
                         mime="text/markdown",
+                        key="manual_100p_download_md_archive",
                         use_container_width=True,
                     )
                 with legacy_col2:
@@ -1336,6 +1340,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                     data=manual_process_text,
                     file_name="04_권리분석_실무와_경매_취하_유도_프로세스.md",
                     mime="text/markdown",
+                    key="manual_process_download_md_p05",
                     use_container_width=True,
                 )
 
