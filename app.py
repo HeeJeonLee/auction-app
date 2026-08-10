@@ -2868,6 +2868,13 @@ elif analyze_clicked and uploaded_files:
                     if is_quota_hold:
                         st.warning("⚠️ Gemini 호출 한도(429)로 이미지 자동 판독이 일시 보류되었습니다. 1~2분 후 다시 시도해 주세요.")
                         st.session_state.processing_log.append("⚠️ API 호출 한도 초과 - 이미지 자동 판독 보류 데이터로 처리")
+                    elif vision_df is None or vision_df.empty:
+                        st.warning("⚠️ 캡처본에서 인식된 데이터가 0건입니다. 이미지 품질/엔진/API 키 상태를 확인해 주세요.")
+                        st.info(
+                            "권장 조치: 1) OCR 엔진을 Gemini Vision으로 변경 2) 텍스트 우선(OCR 강화) 유지 "
+                            "3) 상단의 '429 우회: 캡처 텍스트 직접 붙여넣기' 사용"
+                        )
+                        st.session_state.processing_log.append("⚠️ OCR 결과 0건 - 재캡처 또는 Gemini 전환 필요")
                     else:
                         st.session_state.processing_log.append(f"✓ AI 분석 완료: {len(vision_df)}건의 데이터 추출")
                         if used_engine == "gemini" and ocr_engine in {"auto", "local_hybrid"}:
@@ -2905,7 +2912,8 @@ elif analyze_clicked and uploaded_files:
                                 )
                         except Exception:
                             pass
-                    excel_dfs.append(vision_df)
+                    if vision_df is not None and not vision_df.empty:
+                        excel_dfs.append(vision_df)
                 except Exception as e:
                     if _is_local_ocr_unavailable_error(e) and not str(st.session_state.api_key or "").strip():
                         st.error("❌ 캡처 OCR 엔진이 현재 환경에서 동작하지 않습니다. Gemini API 키를 입력하면 자동 분석이 가능합니다.")
@@ -2927,6 +2935,16 @@ elif analyze_clicked and uploaded_files:
         if excel_dfs:
             combined_df = pd.concat(excel_dfs, ignore_index=True)
             st.session_state.processing_log.append(f"✓ 총 {len(combined_df)}건 데이터 통합")
+
+            if combined_df.empty:
+                progress_bar.progress(100)
+                status_text.markdown("#### ⚠️ OCR 결과 0건")
+                st.warning("처리 가능한 행이 0건입니다. 캡처 품질을 높이거나 Gemini Vision으로 재시도해 주세요.")
+                with st.expander("📋 상세 처리 로그 보기"):
+                    for log in st.session_state.processing_log:
+                        st.text(log)
+                st.session_state.df = pd.DataFrame(columns=DEFAULT_COLUMNS)
+                raise RuntimeError("OCR_RESULT_EMPTY")
 
             enriched_df = enrich_dataframe(combined_df)
             st.session_state.df = enriched_df
@@ -2982,11 +3000,14 @@ elif analyze_clicked and uploaded_files:
             st.warning("처리할 데이터가 생성되지 않았습니다. API 키/업로드 파일 형식/파일 내용을 확인해 주세요.")
 
     except Exception as pipeline_error:
-        st.error(
-            "❌ 분석 파이프라인에서 오류가 발생했습니다. "
-            "텍스트 직접 분석 또는 CSV/XLSX 업로드 모드로 우선 진행해 주세요."
-        )
-        st.caption(f"오류 유형: {type(pipeline_error).__name__}")
+        if str(pipeline_error) == "OCR_RESULT_EMPTY":
+            pass
+        else:
+            st.error(
+                "❌ 분석 파이프라인에서 오류가 발생했습니다. "
+                "텍스트 직접 분석 또는 CSV/XLSX 업로드 모드로 우선 진행해 주세요."
+            )
+            st.caption(f"오류 유형: {type(pipeline_error).__name__}")
 
 df = st.session_state.df
 
