@@ -307,7 +307,8 @@ DEFAULT_COLUMNS = [
     "원본파일명", "사건번호", "매각기일", "잔여일수", "법원명", "물건번호", "주소", "아파트명", "감정가", "최저매각가격", "낙찰예상가",
     "부채총액", "청산가능여부", "권리요약", "분석점수", "분석등급", "제안포인트", "담당자메모",
     "KB시세", "주요채권자", "심사상태", "추정LTV", "AI_심층분석", "등기부열람여부", "근저당여부", "압류여부", "가처분여부",
-    "규칙버전", "규칙점수", "규칙판정", "규칙근거", "취하스크립트"
+    "규칙버전", "규칙점수", "규칙판정", "규칙근거", "취하스크립트",
+    "OCR_검증상태", "OCR_검증사유", "OCR_엔진불일치", "최종승인"
 ]
 
 # Session State 초기화
@@ -317,6 +318,8 @@ if "uploaded_images" not in st.session_state:
     st.session_state.uploaded_images = []
 if "processing_log" not in st.session_state:
     st.session_state.processing_log = []
+if "analysis_image_map" not in st.session_state:
+    st.session_state.analysis_image_map = {}
 if "clipboard_images" not in st.session_state:
     st.session_state.clipboard_images = []
 if "clipboard_hashes" not in st.session_state:
@@ -378,6 +381,109 @@ def build_clipboard_upload(paste_result, index_hint: int):
     st.session_state.clipboard_hashes.add(image_hash)
     file_name = f"clipboard_capture_{index_hint:03d}.png"
     return ClipboardImageUpload(image_bytes=image_bytes, name=file_name)
+
+
+def _normalize_compare_text(field: str, value: object) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if field in {"감정가", "최저매각가격", "낙찰예상가", "부채총액", "KB시세", "물건번호"}:
+        return re.sub(r"[^0-9]", "", text)
+    if field == "매각기일":
+        return re.sub(r"[^0-9]", "", text)
+    return re.sub(r"\s+", "", text).lower()
+
+
+def _critical_gate_issues(row_dict: dict[str, object]) -> list[str]:
+    required_fields = ["사건번호", "매각기일", "감정가", "최저매각가격", "부채총액", "주요채권자", "주소"]
+    issues: list[str] = []
+
+    for field in required_fields:
+        raw = row_dict.get(field, "")
+        normalized = _normalize_compare_text(field, raw)
+        raw_text = str(raw or "").strip().lower()
+        if not normalized or any(token in raw_text for token in ["미상", "판독불가", "정보없음", "ai쿼터대기", "nan", "none"]):
+            issues.append(f"{field} 누락/불명확")
+
+    verify_status = str(row_dict.get("OCR_검증상태") or "").strip().upper()
+    mismatch = str(row_dict.get("OCR_엔진불일치") or "").strip()
+    if verify_status == "HOLD_REQUIRED":
+        issues.append("OCR 이중엔진 핵심필드 불일치")
+    if mismatch:
+        issues.append(f"엔진불일치:{mismatch}")
+
+    dedup: list[str] = []
+    for issue in issues:
+        if issue not in dedup:
+            dedup.append(issue)
+    return dedup
+
+
+def _split_source_names(raw_names: object) -> list[str]:
+    parts = re.split(r"[,|]", str(raw_names or ""))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _render_verification_panel(frame: pd.DataFrame, image_map: dict[str, bytes]) -> None:
+    st.markdown("### 🔍 원본-추출-판정 3열 검증")
+    st.caption("핵심 필드 불일치 또는 누락은 자동 통과되지 않으며, 최종 승인 전 반드시 대조 검수해야 합니다.")
+
+    if frame.empty:
+        st.info("검증할 데이터가 없습니다.")
+        return
+
+    selector_labels = []
+    for idx, row in frame.iterrows():
+        case_no = str(row.get("사건번호") or "미상")
+        verdict = str(row.get("규칙판정") or "미생성")
+        selector_labels.append(f"{idx} | {case_no} | {verdict}")
+
+    selected_label = st.selectbox("검수할 사건 선택", options=selector_labels, key="verify_panel_case_selector")
+    selected_idx = int(selected_label.split("|")[0].strip())
+    row = frame.loc[selected_idx]
+
+    src_names = _split_source_names(row.get("원본파일명", ""))
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("**원본 캡처**")
+        if not src_names:
+            st.info("원본파일명이 비어 있습니다.")
+        for src in src_names[:4]:
+            image_bytes = image_map.get(src)
+            if image_bytes:
+                st.image(image_bytes, caption=src, use_container_width=True)
+            else:
+                st.caption(f"이미지 없음: {src}")
+
+    with col2:
+        st.markdown("**추출 핵심값**")
+        critical_fields = ["사건번호", "매각기일", "법원명", "주소", "감정가", "최저매각가격", "부채총액", "주요채권자"]
+        extracted_view = pd.DataFrame(
+            [{"필드": f, "추출값": str(row.get(f) or "")} for f in critical_fields]
+        )
+        st.dataframe(extracted_view, use_container_width=True, height=290)
+        st.caption(f"OCR 검증상태: {row.get('OCR_검증상태', '')} / 사유: {row.get('OCR_검증사유', '')}")
+        mismatch = str(row.get("OCR_엔진불일치") or "").strip()
+        if mismatch:
+            st.warning(f"엔진 불일치: {mismatch}")
+
+    with col3:
+        st.markdown("**판정/근거/승인**")
+        st.write(f"규칙판정: {row.get('규칙판정', '')}")
+        st.write(f"규칙점수: {row.get('규칙점수', '')}")
+        st.write(f"심사상태: {row.get('심사상태', '')}")
+        st.write(f"최종승인: {row.get('최종승인', '미승인')}")
+        st.markdown("근거")
+        st.code(str(row.get("규칙근거") or "근거 없음"), language="text")
+        st.markdown("취하 스크립트")
+        st.info(str(row.get("취하스크립트") or "생성 없음"))
 
 
 def is_image_upload(file_obj) -> bool:
@@ -540,6 +646,14 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     for col in DEFAULT_COLUMNS:
         if col not in result.columns: 
             result[col] = ""
+
+    # StringDtype 열에 숫자를 쓰면 TypeError가 발생할 수 있어 혼합값 입력 전에 object로 통일한다.
+    for col in DEFAULT_COLUMNS:
+        if col in result.columns:
+            try:
+                result[col] = result[col].astype("object")
+            except Exception:
+                pass
             
     for idx, row in result.iterrows():
         try:
@@ -608,11 +722,25 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             except Exception as rule_error:
                 result.at[idx, "규칙판정"] = f"규칙엔진오류({type(rule_error).__name__})"
 
+            hard_gate_issues = _critical_gate_issues(result.loc[idx].to_dict())
+            if hard_gate_issues:
+                result.at[idx, "규칙판정"] = "HOLD"
+                existing_evidence = str(result.at[idx, "규칙근거"] or "").strip()
+                gate_evidence = "[하드게이트] " + " | ".join(hard_gate_issues[:4])
+                result.at[idx, "규칙근거"] = f"{gate_evidence} | {existing_evidence}" if existing_evidence else gate_evidence
+                result.at[idx, "심사상태"] = "⛔ 보류(HOLD) - 핵심필드 검증실패"
+                result.at[idx, "OCR_검증사유"] = str(result.at[idx, "OCR_검증사유"] or "") or "핵심필드 검증실패"
+
+            if not str(result.at[idx, "최종승인"] or "").strip():
+                result.at[idx, "최종승인"] = "미승인"
+
             if not str(row.get("담당자메모") or "").strip():
                 result.at[idx, "담당자메모"] = f"▶ 실무 메모: {build_owner_pitch(row_dict_updated)}"
 
         except Exception as row_error:
-            result.at[idx, "심사상태"] = f"⚠️ 보완필요 (행 처리 오류: {type(row_error).__name__})"
+            result.at[idx, "심사상태"] = (
+                f"⚠️ 보완필요 (행 처리 오류: {type(row_error).__name__}: {str(row_error)[:120]})"
+            )
             if not str(result.at[idx, "담당자메모"] or "").strip():
                 result.at[idx, "담당자메모"] = "▶ 행 처리 중 오류가 발생해 보수적으로 보완필요로 분류되었습니다."
 
@@ -1238,7 +1366,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
 
     st.markdown("### 권리분석 고도화 매뉴얼")
-    st.info("검수 기준 문서는 p01 단일 검수표입니다. 전체 매뉴얼은 뒤에서 참고용으로만 엽니다.")
+    st.info("p01은 현재 1차 기준이며, p02~p50은 동일 화면에서 순차 검수용 참고 기준으로 함께 제공합니다.")
 
     if manual_p01_text:
         st.markdown("#### ✅ 현재 검수 기준: p01 사건 식별")
@@ -2640,6 +2768,7 @@ elif analyze_clicked and uploaded_files:
                 )
 
         if image_files:
+            st.session_state.analysis_image_map = {img.name: img.getvalue() for img in image_files if hasattr(img, "getvalue")}
             status_text.markdown(f"#### 2/4 Vision AI 분석 중... ({len(image_files)}개 이미지)")
             progress_bar.progress(50)
 
@@ -2730,12 +2859,20 @@ elif analyze_clicked and uploaded_files:
             progress_bar.progress(90)
 
             approved_df = enriched_df[status_mask(enriched_df)]
-            approved_filenames = approved_df["원본파일명"].astype(str).tolist()
+            approved_name_tokens: set[str] = set()
+            for names in approved_df["원본파일명"].astype(str).tolist():
+                approved_name_tokens.update(_split_source_names(names))
 
-            temp_approved_images = [img for img in image_files if img.name in approved_filenames]
+            temp_approved_images = [img for img in image_files if img.name in approved_name_tokens]
             st.session_state.uploaded_images = temp_approved_images
             st.session_state.processing_log.append(f"✓ 적격 {len(temp_approved_images)}건 이미지 보관")
             st.session_state.processing_log.append(f"✓ 부적격 {len(image_files) - len(temp_approved_images)}건 이미지 자동 삭제")
+
+            try:
+                hold_count = int(enriched_df["규칙판정"].astype(str).eq("HOLD").sum())
+                st.session_state.processing_log.append(f"✓ 하드게이트 HOLD 건수: {hold_count}건")
+            except Exception:
+                pass
 
             progress_bar.progress(100)
             status_text.markdown("#### ✅ 분석 완료!")
@@ -2783,6 +2920,33 @@ st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>📈 권리분석 및 사건 판단 대시보드</div>", unsafe_allow_html=True)
 
 if not df.empty:
+    with st.expander("👤 사람 최종 승인 게이트", expanded=True):
+        st.caption("자동 판정과 별개로, 담당자 최종 승인이 있어야 보고서 출력 대상으로 포함됩니다.")
+        case_labels = [f"{idx} | {str(row.get('사건번호') or '미상')}" for idx, row in df.iterrows()]
+        default_selected = [
+            label
+            for label, (_, row) in zip(case_labels, df.iterrows())
+            if str(row.get("최종승인") or "") == "승인"
+        ]
+        selected_labels = st.multiselect(
+            "최종 승인 사건 선택",
+            options=case_labels,
+            default=default_selected,
+            key="human_final_approval_selector",
+        )
+        if st.button("최종 승인 상태 반영", key="apply_final_approval"):
+            selected_indices = {int(label.split("|")[0].strip()) for label in selected_labels}
+            new_df = df.copy()
+            new_df["최종승인"] = "미승인"
+            for idx in selected_indices:
+                if idx in new_df.index:
+                    new_df.at[idx, "최종승인"] = "승인"
+            st.session_state.df = new_df
+            df = new_df
+            st.success("최종 승인 상태를 반영했습니다.")
+
+    _render_verification_panel(df, dict(st.session_state.analysis_image_map or {}))
+
     mask_approved = status_mask(df)
     approved = df[mask_approved]
     rejected = df[~mask_approved]
@@ -3024,10 +3188,10 @@ st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>📄 보고서 및 대응 브리핑 출력</div>", unsafe_allow_html=True)
 
 if not df.empty:
-    approved_df = df[status_mask(df)]
+    approved_df = df[status_mask(df) & df["최종승인"].astype(str).eq("승인")]
     if not approved_df.empty:
         st.markdown("#### 💼 의사결정용 전문 리포트 생성")
-        st.caption("적격으로 분류된 물건만 보고서로 출력되며, 자동 정리 요약과 보완 필요 필드도 함께 포함됩니다.")
+        st.caption("적격 + 최종승인 사건만 보고서로 출력되며, 자동 정리 요약과 보완 필요 필드도 함께 포함됩니다.")
         
         export_rows = approved_df.head(50).to_dict(orient="records")
         ppt_bytes = generate_pptx_bytes(export_rows)
@@ -3051,7 +3215,7 @@ if not df.empty:
                 use_container_width=True
             )
     else:
-        st.warning("출력 가능한 '적격(Approved)' 자산 데이터가 없습니다.")
+        st.warning("출력 가능한 '적격 + 최종승인' 자산 데이터가 없습니다.")
 else:
     st.info("데이터가 없습니다.")
 

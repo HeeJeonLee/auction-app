@@ -898,6 +898,35 @@ def _merge_engine_rows_with_priority(paddle_row: dict[str, Any], tesseract_row: 
     return _normalize_extracted_row(merged)
 
 
+def _normalize_for_engine_compare(field: str, value: Any) -> str:
+    text = _norm_text(value)
+    if not text:
+        return ""
+
+    if field in {"감정가", "최저매각가격", "낙찰예상가", "부채총액", "KB시세", "물건번호"}:
+        return re.sub(r"[^0-9]", "", text)
+
+    if field == "매각기일":
+        return re.sub(r"[^0-9]", "", text)
+
+    return re.sub(r"\s+", "", text).lower()
+
+
+def _find_engine_disagreements(paddle_row: dict[str, Any], tesseract_row: dict[str, Any]) -> list[str]:
+    critical_fields = ["사건번호", "매각기일", "감정가", "최저매각가격", "부채총액", "주소", "주요채권자"]
+    disagreements: list[str] = []
+    for field in critical_fields:
+        p_raw = paddle_row.get(field, "")
+        t_raw = tesseract_row.get(field, "")
+        p = _normalize_for_engine_compare(field, p_raw)
+        t = _normalize_for_engine_compare(field, t_raw)
+        if not p or not t:
+            continue
+        if p != t:
+            disagreements.append(f"{field}:{_norm_text(p_raw)} != {_norm_text(t_raw)}")
+    return disagreements
+
+
 def _parse_text_to_row(raw_text: str, default_columns: List[str], image_name: str) -> dict[str, Any]:
     df = parse_captured_text_to_dataframe(raw_text, default_columns)
     row = df.iloc[0].to_dict() if not df.empty else {col: "" for col in default_columns}
@@ -970,11 +999,24 @@ def _process_images_with_local_hybrid(
                 tess_row = _parse_text_to_row(tesseract_res.get("text", ""), default_columns, img_file.name)
 
             merged_row = _merge_engine_rows_with_priority(paddle_row, tess_row)
+            disagreements = _find_engine_disagreements(paddle_row, tess_row)
             if _core_field_score(merged_row) >= _core_field_score(paddle_row):
                 final_row = merged_row
                 tesseract_used = True
                 tesseract_retry_used += 1
+            if disagreements:
+                final_row["OCR_검증상태"] = "HOLD_REQUIRED"
+                final_row["OCR_검증사유"] = "핵심필드 엔진 불일치"
+                final_row["OCR_엔진불일치"] = " | ".join(disagreements[:8])
+            else:
+                final_row["OCR_검증상태"] = "ENGINE_MATCH"
+                final_row["OCR_검증사유"] = "핵심필드 일치"
+                final_row["OCR_엔진불일치"] = ""
             tesseract_retry_count += 1
+        else:
+            final_row["OCR_검증상태"] = "SINGLE_ENGINE"
+            final_row["OCR_검증사유"] = "단일 엔진 또는 재시도 생략"
+            final_row["OCR_엔진불일치"] = ""
 
         auto_summary = build_structured_case_summary(final_row)
         final_row["권리요약"] = auto_summary["자동정리요약"]
