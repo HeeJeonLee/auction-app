@@ -902,6 +902,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_p36_path = Path(__file__).resolve().parent / "docs" / "36_p36_제안조건최소세트_검수표_v1.md"
     manual_p37_path = Path(__file__).resolve().parent / "docs" / "37_p37_반론대응준비도_검수표_v1.md"
     manual_p38_path = Path(__file__).resolve().parent / "docs" / "38_p38_회수시점개선문구_검수표_v1.md"
+    manual_p39_path = Path(__file__).resolve().parent / "docs" / "39_p39_리스크병기의무_검수표_v1.md"
     manual_100p_name = "04_권리분석_실무_매뉴얼_100p.md"
     manual_process_name = "04_권리분석_실무와_경매_취하_유도_프로세스.md"
     manual_mvp_name = "05_MVP_권리분석32p_취하18p_검수본_v2.md"
@@ -943,6 +944,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_p36_name = "36_p36_제안조건최소세트_검수표_v1.md"
     manual_p37_name = "37_p37_반론대응준비도_검수표_v1.md"
     manual_p38_name = "38_p38_회수시점개선문구_검수표_v1.md"
+    manual_p39_name = "39_p39_리스크병기의무_검수표_v1.md"
 
     manual_100p_text = ""
     manual_process_text = ""
@@ -985,6 +987,7 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
     manual_p36_text = ""
     manual_p37_text = ""
     manual_p38_text = ""
+    manual_p39_text = ""
     try:
         manual_100p_text = read_utf8_text_file(
             str(manual_100p_path),
@@ -1149,6 +1152,10 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
         manual_p38_text = read_utf8_text_file(
             str(manual_p38_path),
             manual_p38_path.stat().st_mtime if manual_p38_path.exists() else 0.0,
+        )
+        manual_p39_text = read_utf8_text_file(
+            str(manual_p39_path),
+            manual_p39_path.stat().st_mtime if manual_p39_path.exists() else 0.0,
         )
     except Exception as manual_error:
         st.warning(f"매뉴얼 파일을 읽는 중 오류가 발생했습니다: {type(manual_error).__name__}")
@@ -2050,6 +2057,27 @@ with st.expander("📘 권리분석 고도화 매뉴얼(실무 학습용)", expa
                     use_container_width=True,
                 )
             st.markdown(manual_p38_text)
+
+    if manual_p39_text:
+        with st.expander("다음 검수 페이지: p39 리스크 병기 의무", expanded=False):
+            p39_col1, p39_col2 = st.columns(2)
+            with p39_col1:
+                st.download_button(
+                    "📥 p39 검수표 다운로드 (MD)",
+                    data=manual_p39_text,
+                    file_name=manual_p39_name,
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            with p39_col2:
+                st.download_button(
+                    "📥 p39 검수표 다운로드 (TXT)",
+                    data=manual_p39_text,
+                    file_name=manual_p39_name.replace(".md", ".txt"),
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            st.markdown(manual_p39_text)
 
 col_api1, col_api2 = st.columns([3, 1])
 with col_api1:
