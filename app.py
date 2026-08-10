@@ -2806,6 +2806,7 @@ elif analyze_clicked and uploaded_files:
     try:
         image_files = []
         excel_dfs = []
+        unsupported_files = []
 
         st.session_state.processing_log = []
         progress_bar = st.progress(0)
@@ -2829,10 +2830,28 @@ elif analyze_clicked and uploaded_files:
                     image_files.append(file)
                 else:
                     st.session_state.processing_log.append(f"⚠️ 지원하지 않는 파일 형식: {file.name}")
+                    unsupported_files.append(str(getattr(file, "name", "unknown")))
             except Exception as file_error:
                 st.session_state.processing_log.append(
                     f"✗ 파일 분류/로드 실패: {getattr(file, 'name', 'unknown')} ({type(file_error).__name__})"
                 )
+
+        st.info(
+            f"업로드 분류 결과: 이미지 {len(image_files)}개 / 데이터파일 {len(excel_dfs)}개"
+            + (f" / 미지원 {len(unsupported_files)}개" if unsupported_files else "")
+        )
+
+        if not image_files and not excel_dfs:
+            progress_bar.progress(100)
+            status_text.markdown("#### ⚠️ 분석 가능한 파일 없음")
+            st.error("업로드는 되었지만 분석 가능한 이미지/CSV/XLSX 파일이 없습니다.")
+            if unsupported_files:
+                st.warning("미지원 파일: " + ", ".join(unsupported_files[:5]))
+            st.info("권장 형식: PNG/JPG/JPEG/WEBP/ZIP 또는 CSV/XLSX")
+            with st.expander("📋 상세 처리 로그 보기"):
+                for log in st.session_state.processing_log:
+                    st.text(log)
+            st.stop()
 
         if image_files:
             st.session_state.analysis_image_map = {img.name: img.getvalue() for img in image_files if hasattr(img, "getvalue")}
@@ -2901,14 +2920,16 @@ elif analyze_clicked and uploaded_files:
                                     f"평균처리={ocr_stats.get('avg_ms_per_image', 0):.0f}ms/장, "
                                     f"처리량={ocr_stats.get('images_per_minute', 0):.1f}장/분, "
                                     f"재시도율={ocr_stats.get('tesseract_retry_rate', 0.0):.1f}%, "
-                                    f"재시도실사용율={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%"
+                                    f"재시도실사용율={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%, "
+                                    f"2차모드보강율={ocr_stats.get('alternate_mode_retry_rate', 0.0):.1f}%"
                                 )
                                 st.session_state.processing_log.append(
                                     "✓ OCR 런타임 통계 "
                                     f"(avg_ms={ocr_stats.get('avg_ms_per_image', 0):.0f}, "
                                     f"throughput={ocr_stats.get('images_per_minute', 0):.1f}/min, "
                                     f"retry_rate={ocr_stats.get('tesseract_retry_rate', 0.0):.1f}%, "
-                                    f"used_rate={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%)"
+                                    f"used_rate={ocr_stats.get('tesseract_used_rate', 0.0):.1f}%, "
+                                    f"alt_rate={ocr_stats.get('alternate_mode_retry_rate', 0.0):.1f}%)"
                                 )
                         except Exception:
                             pass
@@ -2997,7 +3018,11 @@ elif analyze_clicked and uploaded_files:
         else:
             progress_bar.progress(100)
             status_text.markdown("#### ⚠️ 처리할 데이터가 없습니다")
-            st.warning("처리할 데이터가 생성되지 않았습니다. API 키/업로드 파일 형식/파일 내용을 확인해 주세요.")
+            st.error("처리할 데이터가 생성되지 않았습니다. 캡처 인식이 0건일 수 있습니다.")
+            st.info("권장 조치: 1) Gemini Vision 선택 + API 키 입력 2) 텍스트 우선(OCR 강화) 3) 텍스트 직접 붙여넣기")
+            with st.expander("📋 상세 처리 로그 보기"):
+                for log in st.session_state.processing_log:
+                    st.text(log)
 
     except Exception as pipeline_error:
         if str(pipeline_error) == "OCR_RESULT_EMPTY":

@@ -934,6 +934,67 @@ def _parse_text_to_row(raw_text: str, default_columns: List[str], image_name: st
     return _normalize_extracted_row(row)
 
 
+def _run_alternate_mode_boost(
+    image_bytes: bytes,
+    image_name: str,
+    default_columns: List[str],
+    current_row: dict[str, Any],
+    mode: str,
+    speed_profile: str,
+    bulk_mode: bool,
+    paddle_ok: bool,
+    tesseract_ok: bool,
+) -> tuple[dict[str, Any], bool]:
+    """저신뢰 결과에 대해 반대 OCR 모드로 1회 추가 추출 후 병합한다."""
+    alt_mode = "balanced" if mode == "text_first" else "text_first"
+    alt_variants = _build_local_ocr_variants(
+        image_bytes,
+        alt_mode,
+        speed_profile=speed_profile,
+        bulk_mode=bulk_mode,
+    )
+
+    alt_rows: list[dict[str, Any]] = []
+
+    if paddle_ok:
+        alt_paddle = _run_paddle_ocr_text(alt_variants)
+        alt_paddle_row = _build_best_row_from_ocr_candidates(
+            alt_paddle.get("candidates", []),
+            default_columns,
+            image_name,
+        )
+        if _core_field_score(alt_paddle_row) == 0:
+            alt_paddle_row = _parse_text_to_row(alt_paddle.get("text", ""), default_columns, image_name)
+        alt_rows.append(alt_paddle_row)
+
+    if tesseract_ok:
+        alt_tess = _run_tesseract_ocr_text(alt_variants)
+        alt_tess_row = _build_best_row_from_ocr_candidates(
+            alt_tess.get("candidates", []),
+            default_columns,
+            image_name,
+        )
+        if _core_field_score(alt_tess_row) == 0:
+            alt_tess_row = _parse_text_to_row(alt_tess.get("text", ""), default_columns, image_name)
+        alt_rows.append(alt_tess_row)
+
+    if not alt_rows:
+        return current_row, False
+
+    merged_candidates = _merge_extracted_rows([current_row] + alt_rows, default_columns)
+    if not merged_candidates:
+        return current_row, False
+
+    boosted_row = merged_candidates[0]
+    if _core_field_score(boosted_row) > _core_field_score(current_row):
+        boosted_row["OCR_검증사유"] = (
+            str(boosted_row.get("OCR_검증사유") or "").strip() + " / 반대모드 2차 재인식 보완"
+        ).strip(" /")
+        return boosted_row, True
+
+    return current_row, False
+
+
 def _process_images_with_local_hybrid(
     image_files: List[Any],
     default_columns: List[str],
@@ -953,6 +1014,7 @@ def _process_images_with_local_hybrid(
     tesseract_retry_count = 0
     tesseract_retry_attempts = 0
     tesseract_retry_used = 0
+    alternate_mode_retry_used = 0
     tesseract_retry_limit = max(12, len(image_files) // 3)
     if speed_profile == "fast":
         tesseract_retry_limit = max(6, len(image_files) // 5)
@@ -977,6 +1039,7 @@ def _process_images_with_local_hybrid(
 
         final_row = paddle_row
         tesseract_used = False
+        alternate_mode_used = False
 
         if (
             tesseract_ok
@@ -1018,6 +1081,24 @@ def _process_images_with_local_hybrid(
             final_row["OCR_검증사유"] = "단일 엔진 또는 재시도 생략"
             final_row["OCR_엔진불일치"] = ""
 
+        # 균형/정확도 모드에서는 저신뢰 행을 반대 모드로 1회 더 재인식해 누락 필드를 보강한다.
+        if speed_profile != "fast" and _core_field_score(final_row) < 4:
+            boosted_row, boosted = _run_alternate_mode_boost(
+                image_bytes,
+                img_file.name,
+                default_columns,
+                final_row,
+                mode=mode,
+                speed_profile=speed_profile,
+                bulk_mode=bulk_mode,
+                paddle_ok=paddle_ok,
+                tesseract_ok=tesseract_ok,
+            )
+            if boosted:
+                final_row = boosted_row
+                alternate_mode_used = True
+                alternate_mode_retry_used += 1
+
         auto_summary = build_structured_case_summary(final_row)
         final_row["권리요약"] = auto_summary["자동정리요약"]
         final_row["담당자메모"] = build_case_briefing(final_row)
@@ -1025,6 +1106,7 @@ def _process_images_with_local_hybrid(
         final_row["AI_심층분석"] = (
             ("[로컬 OCR] PaddleOCR 1차 추출" if paddle_ok else "[로컬 OCR] Tesseract 단독 추출")
             + (" + Tesseract 저신뢰 재시도/필드보완" if paddle_ok and tesseract_used else "")
+            + (" + 반대모드 2차 재인식" if alternate_mode_used else "")
             + " 결과입니다."
         )
         rows.append(final_row)
@@ -1048,6 +1130,8 @@ def _process_images_with_local_hybrid(
         "tesseract_retry_used": tesseract_retry_used,
         "tesseract_retry_rate": (tesseract_retry_attempts / image_count) * 100.0,
         "tesseract_used_rate": (tesseract_retry_used / image_count) * 100.0,
+        "alternate_mode_retry_used": alternate_mode_retry_used,
+        "alternate_mode_retry_rate": (alternate_mode_retry_used / image_count) * 100.0,
     }
     return result_df
 
